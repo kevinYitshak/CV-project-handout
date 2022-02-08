@@ -43,6 +43,8 @@ def main(args):
 
     ############################################################################
     # TODO: SUPPLY your code
+    criterion = torch.nn.CrossEntropyLoss()
+    optim = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
     ############################################################################
     
     for epoch in range(args.epoch):
@@ -69,6 +71,22 @@ def main(args):
             x_ul        = x_ul.to(device)
             ####################################################################
             # TODO: SUPPLY you code
+            # zero the parameter gradients
+            optim.zero_grad()
+
+            # create obj for VATLoss class
+            vatLoss = VATLoss(args)
+            vaLoss = vatLoss.forward(model, x_ul)
+            predictions = model(x_l)
+            classificationLoss = criterion(predictions, y_l)
+            loss = classificationLoss + args.alpha * vaLoss
+            loss.backward()
+            print("Loss: ", loss)
+            optim.step()
+
+            if (loss < 0.3):
+                # torch.load('./weights/cifar10.pt')
+                torch.save(model.state_dict(), './weights/cifar10_VAT.pt')
             ####################################################################
 
 
