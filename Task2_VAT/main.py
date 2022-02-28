@@ -78,6 +78,7 @@ def main(args):
             vatLoss = VATLoss(args)
             vaLoss = vatLoss.forward(model, x_ul)
             predictions = model(x_l)
+            trainAcc = accuracy(predictions, y_l)[0].item()
             classificationLoss = criterion(predictions, y_l)
             loss = classificationLoss + args.alpha * vaLoss
             loss.backward()
