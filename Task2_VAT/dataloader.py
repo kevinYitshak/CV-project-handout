@@ -30,7 +30,7 @@ def x_u_split(args, labels):
     np.random.shuffle(labeled_idx)
     return labeled_idx, unlabeled_idx
 
-def get_cifar10(args, root):
+def get_cifar10(args, root, mode="Train"):
     transform_labeled = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(size=32,
@@ -51,7 +51,7 @@ def get_cifar10(args, root):
     train_labeled_dataset = CIFAR10SSL(
         root, train_labeled_idxs, train=True,
         transform=transform_labeled)
-
+    
     train_unlabeled_dataset = CIFAR10SSL(
         root, train_unlabeled_idxs, train=True,
         transform=transform_labeled)
@@ -79,6 +79,7 @@ def get_cifar100(args, root):
     base_dataset = datasets.CIFAR100(
         root, train=True, download=True)
 
+    
     train_labeled_idxs, train_unlabeled_idxs = x_u_split(
         args, base_dataset.targets)
 

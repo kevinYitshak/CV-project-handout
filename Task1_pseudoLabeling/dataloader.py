@@ -30,7 +30,7 @@ def x_u_split(args, labels):
     np.random.shuffle(labeled_idx)
     return labeled_idx, unlabeled_idx
 
-def get_cifar10(args, root):
+def get_cifar10(args, root, mode="Train"):
     transform_labeled = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(size=32,

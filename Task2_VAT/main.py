@@ -9,7 +9,7 @@ from model.wrn  import WideResNet
 import torch
 import torch.optim as optim
 from torch.utils.data   import DataLoader
-
+from tensorboardX import SummaryWriter
 
 def main(args):
     if args.dataset == "cifar10":
@@ -28,7 +28,7 @@ def main(args):
                                     batch_size = args.train_batch, 
                                     shuffle = True, 
                                     num_workers=args.num_workers))
-    unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
+    unlabeled_loader    = iter(DataLoader(unlabeled_dataset,
                                     batch_size=args.train_batch,
                                     shuffle = True, 
                                     num_workers=args.num_workers))
@@ -43,11 +43,16 @@ def main(args):
 
     ############################################################################
     # TODO: SUPPLY your code
+    writer = SummaryWriter('./log')
     criterion = torch.nn.CrossEntropyLoss()
     optim = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
     ############################################################################
+    best_acc = 0
+    iteration = 0
     
     for epoch in range(args.epoch):
+        train_loss_epoch = 0
+        train_acc_epoch = 0
         for i in range(args.iter_per_epoch):
             try:
                 x_l, y_l    = next(labeled_loader)
@@ -73,21 +78,57 @@ def main(args):
             # TODO: SUPPLY you code
             # zero the parameter gradients
             optim.zero_grad()
+            
+            train_loss_iter = 0
+            train_acc_iter = 0
 
             # create obj for VATLoss class
             vatLoss = VATLoss(args)
             vaLoss = vatLoss.forward(model, x_ul)
-            predictions = model(x_l)
-            trainAcc = accuracy(predictions, y_l)[0].item()
+            predictions = model.forward(x_l)            
             classificationLoss = criterion(predictions, y_l)
             loss = classificationLoss + args.alpha * vaLoss
             loss.backward()
             print("Loss: ", loss)
             optim.step()
+            
+            iteration += 1
+            train_loss_iter = loss.item()
+            train_acc_iter = accuracy(predictions, y_l)[0].item()
 
-            if (loss < 0.3):
-                # torch.load('./weights/cifar10.pt')
-                torch.save(model.state_dict(), './weights/cifar10_VAT.pt')
+            writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+            writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+
+            train_loss_epoch += train_loss_iter
+            train_acc_epoch += train_acc_iter
+
+        train_loss_epoch /= iteration
+        train_acc_epoch /= iteration
+
+        with torch.no_grad():
+            test_loss = 0
+            total = 0
+            for i, (data, target) in enumerate(test_loader):
+                model.eval()
+                data, target = data.to(device), target.to(device)
+                pred = model(data)
+                loss = criterion(pred, target)
+
+                test_loss += loss.item()
+                total += target.size(0)
+                acc = accuracy(pred, target)[0].item()
+            
+            test_acc = acc / total
+
+        writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
+        writer.add_scalar('Train/Loss', train_loss_epoch, epoch)
+        writer.add_scalar('Test/Acc', test_acc, epoch)
+        writer.add_scalar('Test/loss', test_loss, epoch)
+
+        if (test_acc > best_acc):
+            best_acc = test_acc
+            # torch.load('./weights/cifar10.pt')
+            torch.save(model.state_dict(), './weights/cifar10_VAT.pt')
             ####################################################################
 
 

@@ -14,7 +14,7 @@ from model.wrn  import WideResNet
 import torch
 import torch.optim as optim
 from torch.utils.data   import DataLoader
-
+from tensorboardX import SummaryWriter
 
 def main(args):
     if args.dataset == "cifar10":
@@ -50,20 +50,23 @@ def main(args):
 
     ############################################################################
     # TODO: SUPPLY your code
+    writer = SummaryWriter('./log')
     # optim
     optim = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
     # loss
     criterion = torch.nn.CrossEntropyLoss()
     ############################################################################
     
-    loss_unlabel = 0
+    best_acc = 0
+    iteration = 0
 
     for epoch in range(args.epoch):
 
         print('-'*30)
         print("epoch: ", epoch)
         print('-'*30)
-
+        train_loss_epoch = 0
+        train_acc_epoch = 0
         # model.train()
 
         for i in range(args.iter_per_epoch):
@@ -100,6 +103,9 @@ def main(args):
             y_l_pred = model(x_l) # [64]
             y_ul_pred = model(x_ul)
             
+            train_loss_iter = 0
+            train_acc_iter = 0
+
             # zero the parameter gradients
             optim.zero_grad()
 
@@ -107,43 +113,86 @@ def main(args):
             label_loss = criterion(y_l_pred, y_l)
             
             # start adding unlabeled data after training for some iterations
-            if (i > 40):
+            if (epoch > 40):
 
                 # porb for unlabeled data
                 y_ul_pred_prob = torch.nn.Softmax(dim=1)(y_ul_pred)
                 # print(y_ul_pred_prob)
 
                 max_pred_val, max_pred_index = torch.max(y_ul_pred_prob, dim=-1, keepdim=True) # [64, 1]
-                unlabel_index = torch.where(max_pred_val > args.threshold, max_pred_index, 11 * torch.ones(1, dtype=torch.long))
+                unlabel_index = torch.where(max_pred_val > args.threshold, max_pred_index, (args.num_class+1) * torch.ones(1, dtype=torch.long))
                 
                 # print(max_pred_val)
-                print(unlabel_index[unlabel_index != 11])
+                # print(unlabel_index[unlabel_index != (args.num_class+1)])
 
                 idx_numpy = torch.squeeze(unlabel_index, -1).numpy() # [64]
                 
                 # X_t = torch.cat((X_t, x_ul[idx_numpy[idx_numpy != 11]] ), dim=0) 
-                selected_unlabeled_samples = x_ul[idx_numpy[idx_numpy != 11]]
+                selected_unlabeled_samples = x_ul[idx_numpy[idx_numpy != (args.num_class+1)]]
 
                 # print(selected_unlabeled_samples.size())
             
                 unlabel_pred = model(selected_unlabeled_samples)
                 
                 if (unlabel_index[unlabel_index != 11].size(0) != 0):
-                    unlabel_loss = criterion(unlabel_pred, unlabel_index[unlabel_index != 11])
+                    unlabel_loss = criterion(unlabel_pred, unlabel_index[unlabel_index != (args.num_class+1)])
                     final_loss = label_loss + unlabel_loss
                 else:
                     final_loss = label_loss
             
-            if ( i < 40):
-                print(final_loss)
+            if ( epoch < 40):
+                # print(final_loss)
                 label_loss.backward()
+                iteration += 1
+                train_loss_iter = label_loss.item()
+                train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
+
+                writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+                writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+
+                train_loss_epoch += train_loss_iter
+                train_acc_epoch += train_acc_iter
             else:
                 final_loss.backward()
+                iteration += 1
+                train_loss_iter = final_loss.item()
+                train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
+
+                writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+                writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+
+                train_loss_epoch += train_loss_iter
+                train_acc_epoch += train_acc_iter
+
             optim.step()
 
-            if (final_loss < 0.3):
-                # torch.load('./weights/cifar10.pt')
-                torch.save(model.state_dict(), './weights/cifar10.pt')
+        train_loss_epoch /= iteration
+        train_acc_epoch /= iteration
+
+        with torch.no_grad():
+            test_loss = 0
+            total = 0
+            for i, (data, target) in enumerate(test_loader):
+                model.eval()
+                data, target = data.to(device), target.to(device)
+                pred = model(data)
+                loss = criterion(pred, target)
+
+                test_loss += loss.item()
+                total += target.size(0)
+                acc = accuracy(pred, target)[0].item()
+            
+            test_acc = acc / total
+
+        writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
+        writer.add_scalar('Train/Loss', train_loss_epoch, epoch)
+        writer.add_scalar('Test/Acc', test_acc, epoch)
+        writer.add_scalar('Test/loss', test_loss, epoch)
+
+        if (test_acc > best_acc):
+            best_acc = test_acc
+            # torch.load('./weights/cifar10.pt')
+            torch.save(model.state_dict(), './weights/cifar10.pt')
             ####################################################################
             
 
@@ -170,9 +219,9 @@ if __name__ == "__main__":
                         help='train batchsize')
     parser.add_argument('--test-batch', default=64, type=int,
                         help='train batchsize')
-    parser.add_argument('--total-iter', default=1024*1, type=int,
+    parser.add_argument('--total-iter', default=1*1, type=int,
                         help='total number of iterations to run') # 512
-    parser.add_argument('--iter-per-epoch', default=1024, type=int,
+    parser.add_argument('--iter-per-epoch', default=1, type=int,
                         help="Number of iterations to run per epoch")
     parser.add_argument('--num-workers', default=1, type=int,
                         help="Number of workers to launch during training")
