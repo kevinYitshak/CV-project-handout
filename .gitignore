@@ -1,5 +1,7 @@
 Task1_pseudoLabeling/data
 Task1_pseudoLabeling/weights
+Task1_pseudoLabeling/log
 Task1_pseudoLabeling/__pycache__
 
 Task2_Vat/data
+Task2_Vat/log

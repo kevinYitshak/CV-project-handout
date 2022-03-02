@@ -4,8 +4,6 @@ import math
 from re import X
 import numpy as np
 
-from sklearn.metrics import max_error
-
 from dataloader import get_cifar10, get_cifar100
 from utils      import accuracy
 
@@ -51,14 +49,18 @@ def main(args):
     ############################################################################
     # TODO: SUPPLY your code
     writer = SummaryWriter('./log')
-    # optim
-    optim = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
-    # loss
     criterion = torch.nn.CrossEntropyLoss()
+    # optim
+    optim = torch.optim.SGD(
+            model.parameters(),
+            lr=1e-2,
+            momentum=0.9,
+            weight_decay=5e-4,
+        )
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=1024, epochs=10)
     ############################################################################
     
     best_acc = 0
-    iteration = 0
 
     for epoch in range(args.epoch):
 
@@ -67,6 +69,7 @@ def main(args):
         print('-'*30)
         train_loss_epoch = 0
         train_acc_epoch = 0
+        iteration = 0
         # model.train()
 
         for i in range(args.iter_per_epoch):
@@ -111,66 +114,58 @@ def main(args):
 
             # get loss for labeled data
             label_loss = criterion(y_l_pred, y_l)
-            
-            # start adding unlabeled data after training for some iterations
-            if (epoch > 40):
+        
+            selected_unlabeled_samples = 0
 
-                # porb for unlabeled data
-                y_ul_pred_prob = torch.nn.Softmax(dim=1)(y_ul_pred)
-                # print(y_ul_pred_prob)
+            # porb for unlabeled data
+            y_ul_pred_prob = torch.nn.Softmax(dim=1)(y_ul_pred)
+            # print(y_ul_pred_prob.size()) # [64, 10]
 
-                max_pred_val, max_pred_index = torch.max(y_ul_pred_prob, dim=-1, keepdim=True) # [64, 1]
-                unlabel_index = torch.where(max_pred_val > args.threshold, max_pred_index, (args.num_class+1) * torch.ones(1, dtype=torch.long))
-                
-                # print(max_pred_val)
-                # print(unlabel_index[unlabel_index != (args.num_class+1)])
+            max_pred_val, max_pred_idx = torch.topk(y_ul_pred_prob, k=1, dim=-1)
+            # print(pred_val.shape, pred_idx.shape) # [64, 1]
 
-                idx_numpy = torch.squeeze(unlabel_index, -1).numpy() # [64]
-                
-                # X_t = torch.cat((X_t, x_ul[idx_numpy[idx_numpy != 11]] ), dim=0) 
-                selected_unlabeled_samples = x_ul[idx_numpy[idx_numpy != (args.num_class+1)]]
+            unlabel_index = torch.where(max_pred_val > args.threshold, max_pred_idx, 
+                        (args.num_classes+1) * torch.ones(1, dtype=torch.long).to(device))
 
-                # print(selected_unlabeled_samples.size())
-            
-                unlabel_pred = model(selected_unlabeled_samples)
-                
-                if (unlabel_index[unlabel_index != 11].size(0) != 0):
-                    unlabel_loss = criterion(unlabel_pred, unlabel_index[unlabel_index != (args.num_class+1)])
-                    final_loss = label_loss + unlabel_loss
-                else:
-                    final_loss = label_loss
-            
-            if ( epoch < 40):
-                # print(final_loss)
-                label_loss.backward()
-                iteration += 1
-                train_loss_iter = label_loss.item()
-                train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
+            # print(unlabel_index[unlabel_index != (args.num_classes+1)])
 
-                writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-                writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+            idx_numpy = torch.squeeze(unlabel_index, -1).detach().cpu().numpy() # [64]
+            idx_flitered = idx_numpy[idx_numpy != (args.num_classes+1)]
+            # print("index filtered: ", idx_flitered.shape)
+            selected_unlabeled_samples = torch.index_select(x_ul, 0, torch.as_tensor(idx_flitered, device=device))
 
-                train_loss_epoch += train_loss_iter
-                train_acc_epoch += train_acc_iter
+            print('selected_samples: ', selected_unlabeled_samples.size())
+
+            unlabel_pred = model(selected_unlabeled_samples)
+
+            if (unlabel_index[unlabel_index != (args.num_classes+1)].size(0) != 0):
+                unlabel_loss = criterion(unlabel_pred, unlabel_index[unlabel_index != (args.num_classes+1)])
+                final_loss = label_loss + unlabel_loss
             else:
-                final_loss.backward()
-                iteration += 1
-                train_loss_iter = final_loss.item()
-                train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
+                final_loss = label_loss
+            
+            final_loss.backward()
+            print("Loss: ", final_loss.item())
+            iteration += 1
+            train_loss_iter = final_loss.item()
+            train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
 
-                writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-                writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+            writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+            writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
 
-                train_loss_epoch += train_loss_iter
-                train_acc_epoch += train_acc_iter
+            train_loss_epoch += train_loss_iter
+            train_acc_epoch += train_acc_iter
 
             optim.step()
+            scheduler.step()
 
         train_loss_epoch /= iteration
         train_acc_epoch /= iteration
+        print("Train Acc: ", train_acc_epoch)
 
         with torch.no_grad():
             test_loss = 0
+            test_acc = 0
             total = 0
             for i, (data, target) in enumerate(test_loader):
                 model.eval()
@@ -178,11 +173,14 @@ def main(args):
                 pred = model(data)
                 loss = criterion(pred, target)
 
-                test_loss += loss.item()
-                total += target.size(0)
-                acc = accuracy(pred, target)[0].item()
-            
-            test_acc = acc / total
+                test_loss += loss.item() / target.size(0)
+                total += 1
+                test_acc += accuracy(pred, target)[0].item()
+        
+        test_acc /= total
+        test_loss /= total
+        
+        print("Test Acc: ", test_acc)
 
         writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
         writer.add_scalar('Train/Loss', train_loss_epoch, epoch)
@@ -206,7 +204,7 @@ if __name__ == "__main__":
     parser.add_argument("--datapath", default="./data/", 
                         type=str, help="Path to the CIFAR-10/100 dataset")
     parser.add_argument('--num-labeled', type=int, 
-                        default=4000, help='Total number of labeled samples')
+                        default=250, help='Total number of labeled samples')
     parser.add_argument("--lr", default=0.03, type=float, 
                         help="The initial learning rate") 
     parser.add_argument("--momentum", default=0.9, type=float,
@@ -219,9 +217,9 @@ if __name__ == "__main__":
                         help='train batchsize')
     parser.add_argument('--test-batch', default=64, type=int,
                         help='train batchsize')
-    parser.add_argument('--total-iter', default=1*1, type=int,
+    parser.add_argument('--total-iter', default=1024*10, type=int,
                         help='total number of iterations to run') # 512
-    parser.add_argument('--iter-per-epoch', default=1, type=int,
+    parser.add_argument('--iter-per-epoch', default=1024, type=int,
                         help="Number of iterations to run per epoch")
     parser.add_argument('--num-workers', default=1, type=int,
                         help="Number of workers to launch during training")
