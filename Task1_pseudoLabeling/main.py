@@ -3,6 +3,7 @@ from decimal import MAX_PREC
 import math
 from re import X
 import numpy as np
+from tqdm import tqdm
 
 from dataloader import get_cifar10, get_cifar100
 from utils      import accuracy
@@ -25,7 +26,7 @@ def main(args):
                                                                 args.datapath)
     args.epoch = math.ceil(args.total_iter / args.iter_per_epoch)
 
-    print(labeled_dataset)
+    # print(labeled_dataset)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -55,7 +56,7 @@ def main(args):
             model.parameters(),
             lr=1e-2,
             momentum=0.9,
-            weight_decay=5e-4,
+            weight_decay=args.wd,
         )
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=1024, epochs=10)
     ############################################################################
@@ -71,8 +72,9 @@ def main(args):
         train_acc_epoch = 0
         iteration = 0
         # model.train()
+        tbar = tqdm(range(args.iter_per_epoch))
 
-        for i in range(args.iter_per_epoch):
+        for i in tbar:
             # ---------------------------
             # print("iter: ", i)
             # ---------------------------
@@ -121,34 +123,35 @@ def main(args):
             y_ul_pred_prob = torch.nn.Softmax(dim=1)(y_ul_pred)
             # print(y_ul_pred_prob.size()) # [64, 10]
 
-            max_pred_val, max_pred_idx = torch.topk(y_ul_pred_prob, k=1, dim=-1)
-            # print(pred_val.shape, pred_idx.shape) # [64, 1]
+            max_pred_val, max_pred_label = torch.topk(y_ul_pred_prob, k=1, dim=-1)
+            # print(max_pred_val, max_pred_label.shape) # [64, 1]
 
-            unlabel_index = torch.where(max_pred_val > args.threshold, max_pred_idx, 
+            unlabel = torch.where(max_pred_val > args.threshold, max_pred_label, 
                         (args.num_classes+1) * torch.ones(1, dtype=torch.long).to(device))
 
-            # print(unlabel_index[unlabel_index != (args.num_classes+1)])
+            unlabel_filtered = unlabel[unlabel != (args.num_classes+1)].long()
+            # print(unlabel_filtered.shape)
 
-            idx_numpy = torch.squeeze(unlabel_index, -1).detach().cpu().numpy() # [64]
-            idx_flitered = idx_numpy[idx_numpy != (args.num_classes+1)]
-            # print("index filtered: ", idx_flitered.shape)
-            selected_unlabeled_samples = torch.index_select(x_ul, 0, torch.as_tensor(idx_flitered, device=device))
-
-            print('selected_samples: ', selected_unlabeled_samples.size())
-
-            unlabel_pred = model(selected_unlabeled_samples)
-
-            if (unlabel_index[unlabel_index != (args.num_classes+1)].size(0) != 0):
-                unlabel_loss = criterion(unlabel_pred, unlabel_index[unlabel_index != (args.num_classes+1)])
+            if (unlabel_filtered.size(0) != 0):
+                # get index of unlable_index which is not = 11
+                idx_unlabel, _ = torch.where(unlabel != args.num_classes+1)
+                select_unlabel_samples = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel, device=device))
+                
+                # print('selected_samples: ', select_unlabel_samples.size())
+                 
+                unlabel_pred = model(select_unlabel_samples)
+                unlabel_loss = criterion(unlabel_pred, unlabel_filtered)
                 final_loss = label_loss + unlabel_loss
             else:
                 final_loss = label_loss
             
             final_loss.backward()
-            print("Loss: ", final_loss.item())
+            # print("Loss: ", final_loss.item())
             iteration += 1
             train_loss_iter = final_loss.item()
             train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
+
+            tbar.set_description('loss: {:.4f}; acc: {:.4f}'.format(train_loss_iter, train_acc_iter)) 
 
             writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
             writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
@@ -161,7 +164,7 @@ def main(args):
 
         train_loss_epoch /= iteration
         train_acc_epoch /= iteration
-        print("Train Acc: ", train_acc_epoch)
+        # print("Train Acc: ", train_acc_epoch)
 
         with torch.no_grad():
             test_loss = 0
@@ -179,8 +182,8 @@ def main(args):
         
         test_acc /= total
         test_loss /= total
-        
-        print("Test Acc: ", test_acc)
+
+        print("test_loss: {0}, test_acc: {1}".format(test_loss, test_acc))
 
         writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
         writer.add_scalar('Train/Loss', train_loss_epoch, epoch)
@@ -209,7 +212,7 @@ if __name__ == "__main__":
                         help="The initial learning rate") 
     parser.add_argument("--momentum", default=0.9, type=float,
                         help="Optimizer momentum")
-    parser.add_argument("--wd", default=0.00005, type=float,
+    parser.add_argument("--wd", default=0.001, type=float,
                         help="Weight decay")
     parser.add_argument("--expand-labels", action="store_true", 
                         help="expand labels to fit eval steps")
