@@ -117,7 +117,10 @@ if __name__ == "__main__":
                         help="model width for wide resnet")
 
     args = parser.parse_args()
+    if args.dataset == "cifar100":
+        args.num_classes = 100
     args.num_classes = 10
+
     _, _, test_dataset = get_cifar10(args, args.datapath, mode="Test")
 
     test_loader = DataLoader(test_dataset,
@@ -127,5 +130,9 @@ if __name__ == "__main__":
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    loss, acc = test_cifar10(test_loader, device, "weights/cifar10.pt")
-    print("Accuracy: {0}, Loss: {0}".format(acc, loss))
+    if args.dataset == "cifar10":
+        loss, acc = test_cifar10(test_loader, device, "weights/cifar10.pt")
+        print("Accuracy: {0}, Loss: {0}".format(acc, loss))
+    else:
+        loss, acc = test_cifar100(test_loader, device, "weights/cifar100.pt")
+        print("Accuracy: {0}, Loss: {0}".format(acc, loss))
