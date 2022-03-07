@@ -15,11 +15,11 @@ class VATLoss(nn.Module):
         predictions = torch.softmax(model(x), dim=-1)
         advDistance = 0
 
-        r = torch.randn_like(x).requires_grad_()        
-        r_norm  = self.get_normalized_vector(r).to(self.device)
-
+        r = torch.randn_like(x)
+        
         for _ in range(self.vat_iter):
-            advExamples = x + self.xi * r_norm
+            r = self.xi * self.get_normalized_vector(r).requires_grad_().to(self.device)
+            advExamples = x + r
             advPredictions = model(advExamples)
             advPredictions = torch.softmax(advPredictions, dim=-1)
 
@@ -36,11 +36,6 @@ class VATLoss(nn.Module):
         advPredictions = model(x + self.eps * r)
         loss = nn.functional.kl_div(nn.functional.log_softmax(advPredictions), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
         return loss
-    
-    def vector_norm(self, v):
-        v_ = v.view(v.shape[0], -1, *(1 for _ in range(v.dim() - 2)))
-        v = v / torch.norm(v_, dim=1, keepdim=True) + 1e-8
-        return v
     
     def get_normalized_vector(self, d):
         d_abs_max = torch.max(

@@ -1,5 +1,6 @@
 import argparse
 import math
+from tqdm import tqdm
 
 from dataloader import get_cifar10, get_cifar100
 from vat        import VATLoss
@@ -63,7 +64,10 @@ def main(args):
         print('-'*30)
         print("epoch: ", epoch)
         print('-'*30)
-        for i in range(args.iter_per_epoch):
+
+        tbar = tqdm(range(args.iter_per_epoch))
+
+        for i in tbar:
             
             try:
                 x_l, y_l    = next(labeled_loader)
@@ -100,13 +104,15 @@ def main(args):
             loss = classificationLoss + args.alpha * vaLoss
             loss.backward()
 #             print(i)
-            print("Loss: {0}, VATLoss: {1}".format(loss.item(), vaLoss.item()))
+            # print("Loss: {0}, VATLoss: {1}".format(loss.item(), vaLoss.item()))
             optim.step()
             scheduler.step()
             
             iteration += 1
             train_loss_iter = loss.item()
             train_acc_iter = accuracy(predictions, y_l)[0].item()
+
+            tbar.set_description('loss: {:.4f}; Vat: {:.4f}; acc: {:.4f}'.format(train_loss_iter,vaLoss.item(), train_acc_iter))
 
             writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
             writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
@@ -139,7 +145,7 @@ def main(args):
         writer.add_scalar('Test/Acc', test_acc, epoch)
         writer.add_scalar('Test/loss', test_loss, epoch)
         
-        print(test_acc)
+        print('Test Acc: ', test_acc)
         
         if (test_acc >= best_acc):
             best_acc = test_acc
