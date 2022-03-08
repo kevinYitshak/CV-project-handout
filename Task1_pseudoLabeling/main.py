@@ -153,8 +153,8 @@ def main(args):
 
             tbar.set_description('loss: {:.4f}; acc: {:.4f}'.format(train_loss_iter, train_acc_iter)) 
 
-            writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-            writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+            # writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+            # writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
 
             train_loss_epoch += train_loss_iter
             train_acc_epoch += train_acc_iter

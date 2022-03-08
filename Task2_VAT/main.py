@@ -51,12 +51,13 @@ def main(args):
             model.parameters(),
             lr=1e-2,
             momentum=0.9,
-            weight_decay=5e-4,
+            weight_decay=args.wd,
         )
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=1024, epochs=10)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=1024, epochs=30)
     ############################################################################
     best_acc = 0
     
+    model.train()
     for epoch in range(args.epoch):
         train_loss_epoch = 0
         train_acc_epoch = 0
@@ -114,8 +115,8 @@ def main(args):
 
             tbar.set_description('loss: {:.4f}; Vat: {:.4f}; acc: {:.4f}'.format(train_loss_iter,vaLoss.item(), train_acc_iter))
 
-            writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-            writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+            # writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+            # writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
 
             train_loss_epoch += train_loss_iter
             train_acc_epoch += train_acc_iter
