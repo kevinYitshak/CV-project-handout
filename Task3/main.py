@@ -257,7 +257,7 @@ def main(args):
             # print(max_pred_label) # lables
             # print(pred_val.shape, pred_idx.shape) # [64, 1]
 
-            unlabel = torch.where(max_pred_val > 0.15, max_pred_label, 
+            unlabel = torch.where(max_pred_val > args.threshold, max_pred_label, 
                         (args.num_classes+1) * torch.ones(1, dtype=torch.long).to(device))
 
             # print(unlabel)
@@ -273,11 +273,11 @@ def main(args):
                 # label_samples = 0
                 # label_output = 0
                 unlabel_unique = torch.unique(unlabel_filtered)
-                print('unlabel_unique: ', unlabel_unique.size(0))
+                # print('unlabel_unique: ', unlabel_unique.size(0))
 
-                select_unlabel_unique = torch.empty(unlabel_unique.size(0), 3, 32, 32)
-                select_label_samples = torch.empty(unlabel_unique.size(0), 3, 32, 32)
-                select_label_output = torch.empty(unlabel_unique.size(0))
+                select_unlabel_unique = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
+                select_label_samples = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
+                select_label_output = torch.empty(unlabel_unique.size(0)).to(device)
 
                 for k in range(unlabel_unique.size(0)):
                     idx_unlabel_unique, _ = torch.where(unlabel == unlabel_unique[k])
@@ -293,7 +293,7 @@ def main(args):
                 
                 # print('select_unlabel_output size: ', select_unlabel_samples.size())
 
-                hist_matched_tensor = torch.empty(select_label_samples.size(0), 3, 32, 32)
+                hist_matched_tensor = torch.empty(select_label_samples.size(0), 3, 32, 32).to(device)
                 for i in range(select_unlabel_unique.size(0)): #max can args.num_classes
                     # print(i)
                     img_label = tensor2img(args, select_label_samples[i, :, :, :])
@@ -310,7 +310,7 @@ def main(args):
             # print(hist_matched_tensor.size())
             unlabel_pred = model(select_unlabel_samples)
 
-            hist_matched_pred = model(hist_matched_tensor.to(device=device))
+            hist_matched_pred = model(hist_matched_tensor)
 
             if (unlabel_filtered.size(0) != 0):
                 unlabel_loss = criterion(unlabel_pred, unlabel_filtered)
