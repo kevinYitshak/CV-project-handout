@@ -118,7 +118,7 @@ class CIFAR10SSL(datasets.CIFAR10):
             target = self.target_transform(target)
 
         target = torch.tensor(target)
-        return torch.tensor(img), target.long()
+        return img, target.long()
 
 
 class CIFAR100SSL(datasets.CIFAR100):
@@ -144,5 +144,5 @@ class CIFAR100SSL(datasets.CIFAR100):
             target = self.target_transform(target)
 
         target = torch.tensor(target)
-        return torch.tensor(img), target.long()
+        return img, target.long()
 

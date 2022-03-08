@@ -191,6 +191,7 @@ def main(args):
     
     best_acc = 0
 
+    model.train()
     for epoch in range(args.epoch):
 
         print('-'*30)
@@ -287,8 +288,8 @@ def main(args):
                     select_label_samples[k, :, :, :] = torch.index_select(x_l, 0, idx_label[0][0])
                     select_label_output[k] = torch.index_select(y_l, 0, idx_label[0][0])
 
-                print('select_label_samples size: ', select_label_samples.size())
-                print('select_label_output size: ', select_label_output.size())
+                # print('select_label_samples size: ', select_label_samples.size())
+                # print('select_label_output size: ', select_label_output.size())
                 
                 # print('select_unlabel_output size: ', select_unlabel_samples.size())
 
@@ -306,10 +307,10 @@ def main(args):
                     hist_matched_tensor[i, :, :, :] = img2tensor(args, image_label_matched)
 
 
-            print(hist_matched_tensor.size())
+            # print(hist_matched_tensor.size())
             unlabel_pred = model(select_unlabel_samples)
 
-            hist_matched_pred = model(hist_matched_tensor)
+            hist_matched_pred = model(hist_matched_tensor.to(device=device))
 
             if (unlabel_filtered.size(0) != 0):
                 unlabel_loss = criterion(unlabel_pred, unlabel_filtered)
@@ -319,13 +320,15 @@ def main(args):
                 final_loss = label_loss
             
             final_loss.backward()
-            print("Loss: ", final_loss.item())
+            # print("Loss: ", final_loss.item())
             iteration += 1
             train_loss_iter = final_loss.item()
             train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
 
-            writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-            writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
+            tbar.set_description('loss: {:.4f}; acc: {:.4f}'.format(train_loss_iter, train_acc_iter))
+
+            # writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
+            # writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
 
             train_loss_epoch += train_loss_iter
             train_acc_epoch += train_acc_iter
@@ -335,7 +338,7 @@ def main(args):
 
         train_loss_epoch /= iteration
         train_acc_epoch /= iteration
-        print("Train Acc: ", train_acc_epoch)
+        # print("Train Acc: ", train_acc_epoch)
 
         with torch.no_grad():
             test_loss = 0
