@@ -21,11 +21,11 @@ import torchvision.transforms as transforms
 def tensor2img(args, image):
 
     if args.num_classes == "10":
-        mean = [0.4914, 0.4822, 0.4465]
-        std = [0.2471, 0.2435, 0.2616]
+        mean = np.array([0.4914, 0.4822, 0.4465])
+        std = np.array([0.2471, 0.2435, 0.2616])
     else:
-        mean   = [0.5071, 0.4867, 0.4408]
-        std    = [0.2675, 0.2565, 0.2761]
+        mean   = np.array([0.5071, 0.4867, 0.4408])
+        std    = np.array([0.2675, 0.2565, 0.2761])
 
     tf = transforms.Compose([
         transforms.Normalize((-mean/std), (1/std))
@@ -33,6 +33,7 @@ def tensor2img(args, image):
 
     img = image.detach().cpu()
     img = tf(img).numpy()
+    # print(img.shape)
     img = np.transpose(img, (1, 2, 0))
     img = img * 255
     img = img.astype('uint8')
@@ -41,16 +42,20 @@ def tensor2img(args, image):
 def img2tensor(args, image):
 
     if args.num_classes == "10":
-        mean = [0.4914, 0.4822, 0.4465]
-        std = [0.2471, 0.2435, 0.2616]
+        mean = np.array([0.4914, 0.4822, 0.4465])
+        std = np.array([0.2471, 0.2435, 0.2616])
     else:
-        mean   = [0.5071, 0.4867, 0.4408]
-        std    = [0.2675, 0.2565, 0.2761]
+        mean   = np.array([0.5071, 0.4867, 0.4408])
+        std    = np.array([0.2675, 0.2565, 0.2761])
 
     tf = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(size=32,
+                              padding=int(32*0.125),
+                              padding_mode='reflect'),
         transforms.ToTensor(),
-        transforms.Normalize(mean=mean, std=std)
-    ])
+        transforms.Normalize(mean=mean, std=std)])
 
     return tf(image)
 
@@ -259,47 +264,57 @@ def main(args):
             idx_unlabel, _ = torch.where(unlabel != args.num_classes+1)
             select_unlabel_samples = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel, device=device))
 
-            print('selected_samples: ', select_unlabel_samples.size())
+            # print('selected_samples: ', select_unlabel_samples.size())
 
             unlabel_filtered = unlabel[unlabel != (args.num_classes+1)]
 
             if (unlabel_filtered.size() != 0):
-                label_samples = 0
-                label_output = 0
+                # label_samples = 0
+                # label_output = 0
                 unlabel_unique = torch.unique(unlabel_filtered)
-                '''
-                select imgs from trainloader for hist matching
-                '''
-                for i in range(unlabel_unique.size(0)):
-                    idx_label, _ = torch.where(y_l == unlabel_unique[i])
+                print('unlabel_unique: ', unlabel_unique.size(0))
 
-                    # select sample from x_l with corresponding y_l == unlabel[i]
-                    if label_samples == 0:
-                        label_samples = torch.index_select(x_l, 0, idx_label[0]) 
-                        label_output = torch.index_select(y_l, 0, idx_label[0])
-                    else:
-                        select_label_samples = torch.cat((label_samples, torch.index_select(x_l, 0, idx_label[0])), dim=0)
-                        select_label_output = torch.cat((label_output, torch.index_select(y_l, 0, idx_label[0])), dim=0)
+                select_unlabel_unique = torch.empty(unlabel_unique.size(0), 3, 32, 32)
+                select_label_samples = torch.empty(unlabel_unique.size(0), 3, 32, 32)
+                select_label_output = torch.empty(unlabel_unique.size(0))
+
+                for k in range(unlabel_unique.size(0)):
+                    idx_unlabel_unique, _ = torch.where(unlabel == unlabel_unique[k])
+                    select_unlabel_unique[k, :, :, :] = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel_unique[0], device=device))
+                
+                    idx_label = torch.where(y_l == unlabel_unique[k])
+
+                    select_label_samples[k, :, :, :] = torch.index_select(x_l, 0, idx_label[0][0])
+                    select_label_output[k] = torch.index_select(y_l, 0, idx_label[0][0])
 
                 print('select_label_samples size: ', select_label_samples.size())
                 print('select_label_output size: ', select_label_output.size())
                 
+                # print('select_unlabel_output size: ', select_unlabel_samples.size())
+
                 hist_matched_tensor = torch.empty(select_label_samples.size(0), 3, 32, 32)
-                for i in range(select_label_samples.size(0)): #max can args.num_classes
-                    img_label = tensor2img(select_label_samples[i, :, :, :])
-                    img_unlabel = tensor2img(select_unlabel_samples[i, :, :, :])
+                for i in range(select_unlabel_unique.size(0)): #max can args.num_classes
+                    # print(i)
+                    img_label = tensor2img(args, select_label_samples[i, :, :, :])
+                    img_unlabel = tensor2img(args, select_unlabel_unique[i, :, :, :])
                     '---------------------------HIST MATCHING-----------------------------------'
-                    image_label_matched = match_histograms(img_unlabel, img_label)
+                    image_label_matched = match_histograms(img_label, img_unlabel)
+                    # cv2.imwrite('./img_matched.png', image_label_matched)
+                    # cv2.imwrite('./img_label.png', img_label)
+                    # cv2.imwrite('./img_unlable.png', img_unlabel)
                     '---------------------------HIST MATCHING-----------------------------------'
-                    hist_matched_tensor[i, :, :, :] = img2tensor(image_label_matched)
+                    hist_matched_tensor[i, :, :, :] = img2tensor(args, image_label_matched)
+
 
             print(hist_matched_tensor.size())
             unlabel_pred = model(select_unlabel_samples)
-            
+
+            hist_matched_pred = model(hist_matched_tensor)
 
             if (unlabel_filtered.size(0) != 0):
                 unlabel_loss = criterion(unlabel_pred, unlabel_filtered)
-                final_loss = label_loss + unlabel_loss
+                hist_loss = criterion(hist_matched_pred, select_label_output.long())
+                final_loss = label_loss + unlabel_loss + hist_loss
             else:
                 final_loss = label_loss
             
