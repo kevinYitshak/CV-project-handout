@@ -5,4 +5,13 @@ Task1_pseudoLabeling/__pycache__
 
 Task2_Vat/data
 Task2_Vat/log
-Task3/
+
+Task3/__pycache__
+Task3/model/__pycache__
+Task3/data
+Task3/weights
+Task3/log
+task3/s.jpg
+task3/c.jpg
+task3/20220305T120312-output.jpg
+task3/20220305T120312-transition.jpg
