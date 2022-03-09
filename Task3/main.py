@@ -17,6 +17,7 @@ from model.wrn  import WideResNet
 
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data   import DataLoader
 from tensorboardX import SummaryWriter
 import torchvision.transforms as transforms
@@ -146,18 +147,26 @@ def match_histograms(src_image, ref_image):
  
     return image_after_matching
 
+def interleave(x, size):
+    s = list(x.shape)
+    return x.reshape([-1, size] + s[1:]).transpose(0, 1).reshape([-1] + s[1:])
+
+def de_interleave(x, size):
+    s = list(x.shape)
+    return x.reshape([size, -1] + s[1:]).transpose(0, 1).reshape([-1] + s[1:])
+
 def main(args):
     if args.dataset == "cifar10":
         args.num_classes = 10
         args.model_depth = 28
         args.model_width = 2
-        labeled_dataset, unlabeled_dataset, test_dataset = get_cifar10(args, 
+        labeled_dataset, unlabeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar10(args, 
                                                                 args.datapath)
     if args.dataset == "cifar100":
         args.num_classes = 100
         args.model_depth = 28
         args.model_width = 8
-        labeled_dataset, unlabeled_dataset, test_dataset = get_cifar100(args, 
+        labeled_dataset, unlabeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar100(args, 
                                                                 args.datapath)
     args.epoch = math.ceil(args.total_iter / args.iter_per_epoch)
 
@@ -173,6 +182,12 @@ def main(args):
                                     batch_size=args.train_batch,
                                     shuffle = True, 
                                     num_workers=args.num_workers))
+    
+    unlabeled_loader_fixmatch    = iter(DataLoader(unlabeled_dataset_fixmatch, 
+                                    batch_size=args.train_batch,
+                                    shuffle = True, 
+                                    num_workers=args.num_workers))
+
     test_loader         = DataLoader(test_dataset,
                                     batch_size = args.test_batch,
                                     shuffle = False, 
@@ -193,7 +208,7 @@ def main(args):
         path = args.resume
     else:
         d = datetime.now().strftime('%Y-%m-%d~%H:%M:%S')
-        path = './' + args.dataset + '_' + str(args.num_labeled) + '_' +  d
+        path = './' + args.dataset + '_' + str(args.num_labeled) + '_' + str(args.threshold) + '_' +  d
 
         if not os.path.exists(path + '/ckpt'):
             os.makedirs(path + '/ckpt')
@@ -264,14 +279,35 @@ def main(args):
                                             num_workers=args.num_workers))
                 x_ul, _     = next(unlabeled_loader)
             
+            # ----------------------------- fixmatch loader -------------------------------------
+            try:
+                (x_ul_w, x_ul_s), _     = next(unlabeled_loader_fixmatch)
+            except StopIteration:
+                unlabeled_loader_fixmatch    = iter(DataLoader(unlabeled_dataset_fixmatch, 
+                                            batch_size=args.train_batch,
+                                            shuffle = True, 
+                                            num_workers=args.num_workers))
+                (x_ul_w, x_ul_s), _     = next(unlabeled_loader_fixmatch)
+
             x_l, y_l    = x_l.to(device), y_l.to(device)
             x_ul        = x_ul.to(device)
+            x_ul_w, x_ul_s = x_ul_w.to(device), x_ul_s.to(device)
             ####################################################################
             # TODO: SUPPLY your code
 
-            y_l_pred = model(x_l) # [64]
+            # y_l_pred = model(x_l) # [64]
             y_ul_pred = model(x_ul)
             
+            batch_size = x_l.shape[0]
+            inputs = interleave(
+                torch.cat((x_l, x_ul_w, x_ul_s)), 2*args.mu+1).to(device)
+
+            logits = model(inputs)
+            logits = de_interleave(logits, 2*args.mu+1)
+            logits_x = logits[:batch_size]
+            logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
+            del logits
+
             train_loss_iter = 0
             train_acc_iter = 0
 
@@ -279,10 +315,24 @@ def main(args):
             optim.zero_grad()
 
             # get loss for labeled data
-            label_loss = criterion(y_l_pred, y_l)
-        
-            selected_unlabeled_samples = 0
+            # label_loss = criterion(y_l_pred, y_l)
 
+            '''
+            ----------------------------- fixmatch loss -------------------------------------
+            '''
+            Lx = F.cross_entropy(logits_x, y_l, reduction='mean')
+
+            pseudo_label = torch.softmax(logits_u_w.detach()/args.threshold, dim=-1)
+            max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+            mask = max_probs.ge(args.threshold).float()
+
+            Lu = (F.cross_entropy(logits_u_s, targets_u,
+                                  reduction='none') * mask).mean()
+
+            fix_match_loss = Lx + Lu
+            '''
+            ----------------------------- fixmatch loss -------------------------------------
+            '''
             # porb for unlabeled data
             y_ul_pred_prob = torch.nn.Softmax(dim=1)(y_ul_pred)
             # print(y_ul_pred_prob.size()) # [64, 10]
@@ -345,15 +395,15 @@ def main(args):
             if (unlabel_filtered.size(0) != 0):
                 unlabel_loss = criterion(unlabel_pred, unlabel_filtered)
                 hist_loss = criterion(hist_matched_pred, select_label_output.long())
-                final_loss = label_loss + unlabel_loss + hist_loss
+                final_loss = fix_match_loss + unlabel_loss + hist_loss
             else:
-                final_loss = label_loss
+                final_loss = fix_match_loss
             
             final_loss.backward()
             # print("Loss: ", final_loss.item())
             iteration += 1
             train_loss_iter = final_loss.item()
-            train_acc_iter = accuracy(y_l_pred, y_l)[0].item()
+            train_acc_iter = accuracy(logits_x, y_l)[0].item()
 
             tbar.set_description('loss: {:.4f}; acc: {:.4f}'.format(train_loss_iter, train_acc_iter))
 
@@ -446,9 +496,9 @@ if __name__ == "__main__":
                         help="Weight decay")
     parser.add_argument("--expand-labels", action="store_true", 
                         help="expand labels to fit eval steps")
-    parser.add_argument('--train-batch', default=64, type=int,
+    parser.add_argument('--train_batch', default=64, type=int,
                         help='train batchsize')
-    parser.add_argument('--test-batch', default=64, type=int,
+    parser.add_argument('--test_batch', default=64, type=int,
                         help='train batchsize')
     parser.add_argument('--total-iter', default=2*10, type=int,
                         help='total number of iterations to run') # 512
@@ -464,6 +514,8 @@ if __name__ == "__main__":
                         help="model depth for wide resnet") 
     parser.add_argument("--model-width", type=int, default=2,
                         help="model width for wide resnet")
+    parser.add_argument('--mu', default=1, type=int,
+                        help='coefficient of unlabeled batch size')
     
     # Add more arguments if you need them
     # Describe them in help
