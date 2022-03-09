@@ -179,7 +179,7 @@ def main(args):
                                     num_workers=args.num_workers)
     
     model       = WideResNet(args.model_depth, 
-                                args.num_classes, widen_factor=args.model_width)
+                                args.num_classes, widen_factor=args.model_width, dropRate=0.4)
     model       = model.to(device)
 
     if args.use_ema:
@@ -442,7 +442,7 @@ if __name__ == "__main__":
                         help="The initial learning rate") 
     parser.add_argument("--momentum", default=0.9, type=float,
                         help="Optimizer momentum")
-    parser.add_argument("--wd", default=0.001, type=float,
+    parser.add_argument("--wd", default=0.01, type=float,
                         help="Weight decay")
     parser.add_argument("--expand-labels", action="store_true", 
                         help="expand labels to fit eval steps")
