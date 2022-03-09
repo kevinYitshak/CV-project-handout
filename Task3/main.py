@@ -1,4 +1,5 @@
 import argparse
+from asyncore import write
 from decimal import MAX_PREC
 import math
 from re import X
@@ -6,9 +7,11 @@ import numpy as np
 import cv2 
 
 from tqdm import tqdm
-
+from datetime import datetime
+import os
 from dataloader import get_cifar10, get_cifar100
 from utils      import accuracy
+from random import randrange
 
 from model.wrn  import WideResNet
 
@@ -146,10 +149,14 @@ def match_histograms(src_image, ref_image):
 def main(args):
     if args.dataset == "cifar10":
         args.num_classes = 10
+        args.model_depth = 28
+        args.model_width = 2
         labeled_dataset, unlabeled_dataset, test_dataset = get_cifar10(args, 
                                                                 args.datapath)
     if args.dataset == "cifar100":
         args.num_classes = 100
+        args.model_depth = 28
+        args.model_width = 8
         labeled_dataset, unlabeled_dataset, test_dataset = get_cifar100(args, 
                                                                 args.datapath)
     args.epoch = math.ceil(args.total_iter / args.iter_per_epoch)
@@ -175,9 +182,27 @@ def main(args):
                                 args.num_classes, widen_factor=args.model_width)
     model       = model.to(device)
 
+    if args.use_ema:
+        from ema import ModelEMA
+        ema_model = ModelEMA(args, model, args.ema_decay, device)
+
     ############################################################################
     # TODO: SUPPLY your code
-    writer = SummaryWriter('./log')
+    if args.resume:
+        writer = SummaryWriter(args.resume+'/log')
+        path = args.resume
+    else:
+        d = datetime.now().strftime('%Y-%m-%d~%H:%M:%S')
+        path = './' + args.dataset + '_' + str(args.num_labeled) + '_' +  d
+
+        if not os.path.exists(path + '/ckpt'):
+            os.makedirs(path + '/ckpt')
+            os.makedirs(path + '/log')
+        save_tbx_log = path + '/log'
+        writer = SummaryWriter(save_tbx_log)
+        
+
+    # writer = SummaryWriter('./log')
     criterion = torch.nn.CrossEntropyLoss()
     # optim
     optim = torch.optim.SGD(
@@ -190,9 +215,22 @@ def main(args):
     ############################################################################
     
     best_acc = 0
+    args.start_epoch = 0
+
+    if args.resume: # give path where the ckpt is stored
+        print('=======> RESUMING <=======')
+
+        checkpoint = torch.load(args.resume + '/ckpt/' + args.dataset + '.pth.tar')
+        best_acc = checkpoint['best_acc']
+        args.start_epoch = checkpoint['epoch']
+        model.load_state_dict(checkpoint['state_dict'])
+        if args.use_ema:
+            ema_model.ema.load_state_dict(checkpoint['ema_state_dict'])
+        optim.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
 
     model.train()
-    for epoch in range(args.epoch):
+    for epoch in range(args.start_epoch, args.epoch):
 
         print('-'*30)
         print("epoch: ", epoch)
@@ -231,10 +269,6 @@ def main(args):
             ####################################################################
             # TODO: SUPPLY your code
 
-            # print("Info about labelled and unlabelled data")
-            # print("x_l: {0}, y_l: {1}".format(x_l.shape, y_l_onehot.size())) # [64, 3, 32, 32]; [64, 10]
-            # print("x_ul: {0}, type: {1}".format(x_ul.shape, type(x_ul)))
-
             y_l_pred = model(x_l) # [64]
             y_ul_pred = model(x_ul)
             
@@ -265,31 +299,28 @@ def main(args):
             idx_unlabel, _ = torch.where(unlabel != args.num_classes+1)
             select_unlabel_samples = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel, device=device))
 
-            # print('selected_samples: ', select_unlabel_samples.size())
-
             unlabel_filtered = unlabel[unlabel != (args.num_classes+1)]
+            unlabel_unique = torch.unique(unlabel_filtered)
+            # print('unlabel_unique: ', unlabel_unique)
 
-            if (unlabel_filtered.size() != 0):
-                # label_samples = 0
-                # label_output = 0
-                unlabel_unique = torch.unique(unlabel_filtered)
-                # print('unlabel_unique: ', unlabel_unique.size(0))
-
+            if (unlabel_unique.size() != 0):
                 select_unlabel_unique = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
                 select_label_samples = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
                 select_label_output = torch.empty(unlabel_unique.size(0)).to(device)
 
                 for k in range(unlabel_unique.size(0)):
-                    idx_unlabel_unique, _ = torch.where(unlabel == unlabel_unique[k])
-                    select_unlabel_unique[k, :, :, :] = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel_unique[0], device=device))
+                    idx_unlabel_unique = torch.where(unlabel == unlabel_unique[k])[0]
+                    select_uindex = randrange(0, idx_unlabel_unique)
+                    select_unlabel_unique[k, :, :, :] = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
                 
-                    idx_label = torch.where(y_l == unlabel_unique[k])
+                    idx_label = torch.where(y_l == unlabel_unique[k])[0]
+                    select_lindex = randrange(0, idx_unlabel_unique)
 
-                    select_label_samples[k, :, :, :] = torch.index_select(x_l, 0, idx_label[0][0])
-                    select_label_output[k] = torch.index_select(y_l, 0, idx_label[0][0])
+                    select_label_samples[k, :, :, :] = torch.index_select(x_l, 0, idx_label[select_lindex])
+                    select_label_output[k] = torch.index_select(y_l, 0, idx_label[select_lindex])
 
                 # print('select_label_samples size: ', select_label_samples.size())
-                # print('select_label_output size: ', select_label_output.size())
+                # print('select_label_output size: ', select_label_output)
                 
                 # print('select_unlabel_output size: ', select_unlabel_samples.size())
 
@@ -305,7 +336,6 @@ def main(args):
                     # cv2.imwrite('./img_unlable.png', img_unlabel)
                     '---------------------------HIST MATCHING-----------------------------------'
                     hist_matched_tensor[i, :, :, :] = img2tensor(args, image_label_matched)
-
 
             # print(hist_matched_tensor.size())
             unlabel_pred = model(select_unlabel_samples)
@@ -335,6 +365,8 @@ def main(args):
 
             optim.step()
             scheduler.step()
+            if args.use_ema:
+                ema_model.update(model)
 
         train_loss_epoch /= iteration
         train_acc_epoch /= iteration
@@ -344,10 +376,14 @@ def main(args):
             test_loss = 0
             test_acc = 0
             total = 0
+            if args.use_ema:
+                test_model = ema_model.ema
+            else:
+                test_model = model
             for i, (data, target) in enumerate(test_loader):
-                model.eval()
+                test_model.eval()
                 data, target = data.to(device), target.to(device)
-                pred = model(data)
+                pred = test_model(data)
                 loss = criterion(pred, target)
 
                 test_loss += loss.item() / target.size(0)
@@ -364,10 +400,22 @@ def main(args):
         writer.add_scalar('Test/Acc', test_acc, epoch)
         writer.add_scalar('Test/loss', test_loss, epoch)
 
+        if args.use_ema:
+                ema_to_save = ema_model.ema.module if hasattr(
+                ema_model.ema, "module") else ema_model.ema
+
         if (test_acc > best_acc):
             best_acc = test_acc
-            # torch.load('./weights/cifar10.pt')
-            torch.save(model.state_dict(), './weights/cifar10.pt')
+            torch.save(
+                {
+                'best_acc': best_acc,
+                'epoch': epoch,
+                'state_dict': model.state_dict(),
+                'ema_state_dict': ema_to_save.state_dict() if args.use_ema else None,
+                'optimizer': optim.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                }, path + '/ckpt/cifar10.pth.tar')
+            
             ####################################################################
             
 
@@ -380,6 +428,14 @@ if __name__ == "__main__":
                         type=str, choices=["cifar10", "cifar100"])
     parser.add_argument("--datapath", default="./data/", 
                         type=str, help="Path to the CIFAR-10/100 dataset")
+    parser.add_argument('--use-ema', action='store_true', default=True,
+                        help='use EMA model')
+    parser.add_argument('--ema-decay', default=0.999, type=float,
+                        help='EMA decay rate')
+    parser.add_argument('--start-epoch', default=0, type=int,
+                        help='manual epoch number (useful on restarts)')
+    parser.add_argument('--resume', default='', type=str,
+                        help='path to latest checkpoint (default: none)')
     parser.add_argument('--num-labeled', type=int, 
                         default=250, help='Total number of labeled samples')
     parser.add_argument("--lr", default=0.03, type=float, 
@@ -394,9 +450,9 @@ if __name__ == "__main__":
                         help='train batchsize')
     parser.add_argument('--test-batch', default=64, type=int,
                         help='train batchsize')
-    parser.add_argument('--total-iter', default=1024*10, type=int,
+    parser.add_argument('--total-iter', default=2*10, type=int,
                         help='total number of iterations to run') # 512
-    parser.add_argument('--iter-per-epoch', default=1024, type=int,
+    parser.add_argument('--iter-per-epoch', default=2, type=int,
                         help="Number of iterations to run per epoch")
     parser.add_argument('--num-workers', default=1, type=int,
                         help="Number of workers to launch during training")
