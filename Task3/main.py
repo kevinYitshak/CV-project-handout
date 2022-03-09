@@ -18,7 +18,8 @@ from model.wrn  import WideResNet
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data   import DataLoader
+from torch.utils.data   import DataLoader, RandomSampler, SequentialSampler
+
 from tensorboardX import SummaryWriter
 import torchvision.transforms as transforms
 
@@ -160,13 +161,13 @@ def main(args):
         args.num_classes = 10
         args.model_depth = 28
         args.model_width = 2
-        labeled_dataset, unlabeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar10(args, 
+        labeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar10(args, 
                                                                 args.datapath)
     if args.dataset == "cifar100":
         args.num_classes = 100
         args.model_depth = 28
         args.model_width = 8
-        labeled_dataset, unlabeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar100(args, 
+        labeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar100(args, 
                                                                 args.datapath)
     args.epoch = math.ceil(args.total_iter / args.iter_per_epoch)
 
@@ -178,10 +179,10 @@ def main(args):
                                     batch_size = args.train_batch, 
                                     shuffle = True, 
                                     num_workers=args.num_workers))
-    unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
-                                    batch_size=args.train_batch,
-                                    shuffle = True, 
-                                    num_workers=args.num_workers))
+    # unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
+    #                                 batch_size=args.train_batch,
+    #                                 shuffle = True, 
+    #                                 num_workers=args.num_workers))
     
     unlabeled_loader_fixmatch    = iter(DataLoader(unlabeled_dataset_fixmatch, 
                                     batch_size=args.train_batch,
@@ -270,14 +271,14 @@ def main(args):
                                             num_workers=args.num_workers))
                 x_l, y_l    = next(labeled_loader)
             
-            try:
-                x_ul, _     = next(unlabeled_loader)
-            except StopIteration:
-                unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
-                                            batch_size=args.train_batch,
-                                            shuffle = True, 
-                                            num_workers=args.num_workers))
-                x_ul, _     = next(unlabeled_loader)
+            # try:
+            #     x_ul, _     = next(unlabeled_loader)
+            # except StopIteration:
+            #     unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
+            #                                 batch_size=args.train_batch,
+            #                                 shuffle = True, 
+            #                                 num_workers=args.num_workers))
+            #     x_ul, _     = next(unlabeled_loader)
             
             # ----------------------------- fixmatch loader -------------------------------------
             try:
@@ -290,13 +291,13 @@ def main(args):
                 (x_ul_w, x_ul_s), _     = next(unlabeled_loader_fixmatch)
 
             x_l, y_l    = x_l.to(device), y_l.to(device)
-            x_ul        = x_ul.to(device)
+            # x_ul        = x_ul.to(device)
             x_ul_w, x_ul_s = x_ul_w.to(device), x_ul_s.to(device)
             ####################################################################
             # TODO: SUPPLY your code
 
             # y_l_pred = model(x_l) # [64]
-            y_ul_pred = model(x_ul)
+            # y_ul_pred = model(x_ul)
             
             batch_size = x_l.shape[0]
             inputs = interleave(
@@ -334,7 +335,7 @@ def main(args):
             ----------------------------- fixmatch loss -------------------------------------
             '''
             # porb for unlabeled data
-            y_ul_pred_prob = torch.nn.Softmax(dim=1)(y_ul_pred)
+            y_ul_pred_prob = torch.nn.Softmax(dim=1)(logits_u_w)
             # print(y_ul_pred_prob.size()) # [64, 10]
 
             max_pred_val, max_pred_label = torch.topk(y_ul_pred_prob, k=1, dim=-1)
@@ -347,7 +348,7 @@ def main(args):
             # print(unlabel)
             # get index of unlable_index which is not = 11
             idx_unlabel, _ = torch.where(unlabel != args.num_classes+1)
-            select_unlabel_samples = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel, device=device))
+            select_unlabel_samples = torch.index_select(x_ul_w, 0, torch.as_tensor(idx_unlabel, device=device))
 
             unlabel_filtered = unlabel[unlabel != (args.num_classes+1)]
             unlabel_unique = torch.unique(unlabel_filtered)
@@ -361,7 +362,7 @@ def main(args):
                 for k in range(unlabel_unique.size(0)):
                     idx_unlabel_unique = torch.where(unlabel == unlabel_unique[k])[0]
                     select_uindex = randrange(0, idx_unlabel_unique)
-                    select_unlabel_unique[k, :, :, :] = torch.index_select(x_ul, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
+                    select_unlabel_unique[k, :, :, :] = torch.index_select(x_ul_w, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
                 
                     idx_label = torch.where(y_l == unlabel_unique[k])[0]
                     select_lindex = randrange(0, idx_unlabel_unique)

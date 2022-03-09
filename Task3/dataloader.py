@@ -65,7 +65,7 @@ def get_cifar10(args, root, mode="Train"):
     test_dataset = datasets.CIFAR10(
         root, train=False, transform=transform_val, download=False)
 
-    return train_labeled_dataset, train_unlabeled_dataset, train_unlabeled_dataset_fixmatch, test_dataset
+    return train_labeled_dataset, train_unlabeled_dataset_fixmatch, test_dataset
 
 
 def get_cifar100(args, root):
@@ -104,7 +104,7 @@ def get_cifar100(args, root):
     test_dataset = datasets.CIFAR100(
         root, train=False, transform=transform_val, download=False)
 
-    return train_labeled_dataset, train_unlabeled_dataset, train_unlabeled_dataset_fixmatch, test_dataset
+    return train_labeled_dataset, train_unlabeled_dataset_fixmatch, test_dataset
 
 class TransformFixMatch(object):
     def __init__(self, mean, std):
