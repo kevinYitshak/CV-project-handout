@@ -10,7 +10,7 @@ from tqdm import tqdm
 from datetime import datetime
 import os
 from dataloader import get_cifar10, get_cifar100
-from utils      import accuracy
+from utils      import accuracy, AverageMeter
 from random import randrange
 
 from model.wrn  import WideResNet
@@ -161,13 +161,13 @@ def main(args):
         args.num_classes = 10
         args.model_depth = 28
         args.model_width = 2
-        labeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar10(args, 
+        labeled_dataset, unlabeled_dataset, test_dataset = get_cifar10(args, 
                                                                 args.datapath)
     if args.dataset == "cifar100":
         args.num_classes = 100
         args.model_depth = 28
         args.model_width = 8
-        labeled_dataset, unlabeled_dataset_fixmatch, test_dataset = get_cifar100(args, 
+        labeled_dataset, unlabeled_dataset, test_dataset = get_cifar100(args, 
                                                                 args.datapath)
     args.epoch = math.ceil(args.total_iter / args.iter_per_epoch)
 
@@ -175,27 +175,28 @@ def main(args):
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    labeled_loader      = iter(DataLoader(labeled_dataset, 
-                                    batch_size = args.train_batch, 
-                                    shuffle = True, 
-                                    num_workers=args.num_workers))
-    # unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
-    #                                 batch_size=args.train_batch,
-    #                                 shuffle = True, 
-    #                                 num_workers=args.num_workers))
-    
-    unlabeled_loader_fixmatch    = iter(DataLoader(unlabeled_dataset_fixmatch, 
-                                    batch_size=args.train_batch,
-                                    shuffle = True, 
-                                    num_workers=args.num_workers))
+    labeled_trainloader = DataLoader(
+        labeled_dataset,
+        sampler=RandomSampler(labeled_dataset),
+        batch_size=args.train_batch,
+        num_workers=args.num_workers,
+        drop_last=True)
 
-    test_loader         = DataLoader(test_dataset,
-                                    batch_size = args.test_batch,
-                                    shuffle = False, 
-                                    num_workers=args.num_workers)
+    unlabeled_trainloader = DataLoader(
+        unlabeled_dataset,
+        sampler=RandomSampler(unlabeled_dataset),
+        batch_size=args.train_batch*args.mu,
+        num_workers=args.num_workers,
+        drop_last=True)
+
+    test_loader = DataLoader(
+        test_dataset,
+        sampler=SequentialSampler(test_dataset),
+        batch_size=args.train_batch,
+        num_workers=args.num_workers)
     
     model       = WideResNet(args.model_depth, 
-                                args.num_classes, widen_factor=args.model_width, dropRate=0.4)
+                                args.num_classes, widen_factor=args.model_width, dropRate=0)
     model       = model.to(device)
 
     if args.use_ema:
@@ -219,15 +220,23 @@ def main(args):
         
 
     # writer = SummaryWriter('./log')
-    criterion = torch.nn.CrossEntropyLoss()
+    # criterion = torch.nn.CrossEntropyLoss()
+
+    no_decay = ['bias', 'bn']
+    grouped_parameters = [
+        {'params': [p for n, p in model.named_parameters() if not any(
+            nd in n for nd in no_decay)], 'weight_decay': args.wd},
+        {'params': [p for n, p in model.named_parameters() if any(
+            nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
     # optim
     optim = torch.optim.SGD(
-            model.parameters(),
-            lr=1e-2,
+            grouped_parameters,
+            lr=0.03,
             momentum=0.9,
-            weight_decay=args.wd,
+            nesterov=True
         )
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=1024, epochs=10)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=2, epochs=10)
     ############################################################################
     
     best_acc = 0
@@ -245,63 +254,48 @@ def main(args):
         optim.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
+    labeled_iter = iter(labeled_trainloader)
+    unlabeled_iter = iter(unlabeled_trainloader)
+    
+    model.zero_grad()
     model.train()
     for epoch in range(args.start_epoch, args.epoch):
 
         print('-'*30)
         print("epoch: ", epoch)
         print('-'*30)
-        train_loss_epoch = 0
-        train_acc_epoch = 0
-        iteration = 0
-        # model.train()
+        train_loss_epoch = AverageMeter()
+        losses_x = AverageMeter()
+        losses_u = AverageMeter()
 
         tbar = tqdm(range(args.iter_per_epoch))
 
         for i in tbar:
-            # ---------------------------
-            # print("iter: ", i)
-            # ---------------------------
             try:
-                x_l, y_l    = next(labeled_loader)
-            except StopIteration:
-                labeled_loader      = iter(DataLoader(labeled_dataset, 
-                                            batch_size = args.train_batch, 
-                                            shuffle = True, 
-                                            num_workers=args.num_workers))
-                x_l, y_l    = next(labeled_loader)
-            
-            # try:
-            #     x_ul, _     = next(unlabeled_loader)
-            # except StopIteration:
-            #     unlabeled_loader    = iter(DataLoader(unlabeled_dataset, 
-            #                                 batch_size=args.train_batch,
-            #                                 shuffle = True, 
-            #                                 num_workers=args.num_workers))
-            #     x_ul, _     = next(unlabeled_loader)
-            
-            # ----------------------------- fixmatch loader -------------------------------------
-            try:
-                (x_ul_w, x_ul_s), _     = next(unlabeled_loader_fixmatch)
-            except StopIteration:
-                unlabeled_loader_fixmatch    = iter(DataLoader(unlabeled_dataset_fixmatch, 
-                                            batch_size=args.train_batch,
-                                            shuffle = True, 
-                                            num_workers=args.num_workers))
-                (x_ul_w, x_ul_s), _     = next(unlabeled_loader_fixmatch)
+                inputs_x, targets_x = labeled_iter.next()
+            except:
+                labeled_iter = iter(labeled_trainloader)
+                inputs_x, targets_x = labeled_iter.next()
 
-            x_l, y_l    = x_l.to(device), y_l.to(device)
-            # x_ul        = x_ul.to(device)
-            x_ul_w, x_ul_s = x_ul_w.to(device), x_ul_s.to(device)
+            try:
+                (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+            except:
+                unlabeled_iter = iter(unlabeled_trainloader)
+                (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
+
+            inputs_x, targets_x = inputs_x.to(device), targets_x.to(device)
+            inputs_u_w, inputs_u_s = inputs_u_w.to(device), inputs_u_s.to(device)
             ####################################################################
             # TODO: SUPPLY your code
 
-            # y_l_pred = model(x_l) # [64]
-            # y_ul_pred = model(x_ul)
             
-            batch_size = x_l.shape[0]
+#             print('Train X: ', x_l.shape)
+#             print('Train X_ul_w: ', x_ul_w.shape)
+#             print('Train X_ul_s: ', x_ul_s.shape)
+            
+            batch_size = inputs_x.shape[0]
             inputs = interleave(
-                torch.cat((x_l, x_ul_w, x_ul_s)), 2*args.mu+1).to(device)
+                torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(device)
 
             logits = model(inputs)
             logits = de_interleave(logits, 2*args.mu+1)
@@ -309,8 +303,6 @@ def main(args):
             logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
             del logits
 
-            train_loss_iter = 0
-            train_acc_iter = 0
 
             # zero the parameter gradients
             optim.zero_grad()
@@ -321,7 +313,7 @@ def main(args):
             '''
             ----------------------------- fixmatch loss -------------------------------------
             '''
-            Lx = F.cross_entropy(logits_x, y_l, reduction='mean')
+            Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
             pseudo_label = torch.softmax(logits_u_w.detach()/args.threshold, dim=-1)
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
@@ -348,7 +340,7 @@ def main(args):
             # print(unlabel)
             # get index of unlable_index which is not = 11
             idx_unlabel, _ = torch.where(unlabel != args.num_classes+1)
-            select_unlabel_samples = torch.index_select(x_ul_w, 0, torch.as_tensor(idx_unlabel, device=device))
+            select_unlabel_samples = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel, device=device))
 
             unlabel_filtered = unlabel[unlabel != (args.num_classes+1)]
             unlabel_unique = torch.unique(unlabel_filtered)
@@ -358,17 +350,19 @@ def main(args):
                 select_unlabel_unique = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
                 select_label_samples = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
                 select_label_output = torch.empty(unlabel_unique.size(0)).to(device)
-
+                
+                # print('unlabel unique: ', unlabel_unique.size())
                 for k in range(unlabel_unique.size(0)):
                     idx_unlabel_unique = torch.where(unlabel == unlabel_unique[k])[0]
                     select_uindex = randrange(0, idx_unlabel_unique)
-                    select_unlabel_unique[k, :, :, :] = torch.index_select(x_ul_w, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
+                    # print('select_uindex: ', select_uindex)
+                    select_unlabel_unique[k, :, :, :] = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
                 
-                    idx_label = torch.where(y_l == unlabel_unique[k])[0]
-                    select_lindex = randrange(0, idx_unlabel_unique)
+                    idx_label = torch.where(targets_x == unlabel_unique[k])[0]
+                    select_lindex = randrange(0, idx_label)
 
-                    select_label_samples[k, :, :, :] = torch.index_select(x_l, 0, idx_label[select_lindex])
-                    select_label_output[k] = torch.index_select(y_l, 0, idx_label[select_lindex])
+                    select_label_samples[k, :, :, :] = torch.index_select(inputs_x, 0, idx_label[select_lindex])
+                    select_label_output[k] = torch.index_select(targets_x, 0, idx_label[select_lindex])
 
                 # print('select_label_samples size: ', select_label_samples.size())
                 # print('select_label_output size: ', select_label_output)
@@ -394,69 +388,69 @@ def main(args):
             hist_matched_pred = model(hist_matched_tensor)
 
             if (unlabel_filtered.size(0) != 0):
-                unlabel_loss = criterion(unlabel_pred, unlabel_filtered)
-                hist_loss = criterion(hist_matched_pred, select_label_output.long())
+                unlabel_loss = F.cross_entropy(unlabel_pred, unlabel_filtered)
+                hist_loss = F.cross_entropy(hist_matched_pred, select_label_output.long())
                 final_loss = fix_match_loss + unlabel_loss + hist_loss
             else:
                 final_loss = fix_match_loss
             
             final_loss.backward()
-            # print("Loss: ", final_loss.item())
-            iteration += 1
-            train_loss_iter = final_loss.item()
-            train_acc_iter = accuracy(logits_x, y_l)[0].item()
 
-            tbar.set_description('loss: {:.4f}; acc: {:.4f}'.format(train_loss_iter, train_acc_iter))
-
-            # writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-            # writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
-
-            train_loss_epoch += train_loss_iter
-            train_acc_epoch += train_acc_iter
+            train_loss_epoch.update(final_loss.item())
+            losses_x.update(Lx.item())
+            losses_u.update(Lu.item())
 
             optim.step()
             scheduler.step()
             if args.use_ema:
                 ema_model.update(model)
 
-        train_loss_epoch /= iteration
-        train_acc_epoch /= iteration
-        # print("Train Acc: ", train_acc_epoch)
+            model.zero_grad()
+
+            tbar.set_description('Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. '.format(
+                loss=train_loss_epoch.avg,
+                loss_x=losses_x.avg,
+                loss_u=losses_u.avg,))
+
+        '''
+        ---------------------- TESTING ----------------------
+        '''
 
         with torch.no_grad():
-            test_loss = 0
-            test_acc = 0
-            total = 0
+            test_loss = AverageMeter()
+            test_acc = AverageMeter()
+            # total = 0
             if args.use_ema:
                 test_model = ema_model.ema
             else:
                 test_model = model
+
+            test_loader = tqdm(test_loader)
             for i, (data, target) in enumerate(test_loader):
                 test_model.eval()
                 data, target = data.to(device), target.to(device)
                 pred = test_model(data)
-                loss = criterion(pred, target)
+                loss = F.cross_entropy(pred, target)
 
-                test_loss += loss.item() / target.size(0)
-                total += 1
-                test_acc += accuracy(pred, target)[0].item()
-        
-        test_acc /= total
-        test_loss /= total
-        
-        print("Test Acc: ", test_acc)
+                test_loss.update(loss.item(), data.shape[0])
+                test_acc.update(accuracy(pred, target)[0].item(), data.shape[0])
 
-        writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
-        writer.add_scalar('Train/Loss', train_loss_epoch, epoch)
-        writer.add_scalar('Test/Acc', test_acc, epoch)
-        writer.add_scalar('Test/loss', test_loss, epoch)
+                test_loader.set_description("Loss: {loss:.4f}. Test Acc: {top1:.2f}. ".format(
+                    loss=test_loss.avg,
+                    top1=test_acc.avg,
+                ))
+
+        # writer.add_scalar('Train/Acc', train_acc_epoch.avg, epoch)
+        writer.add_scalar('Train/Loss', train_loss_epoch.avg, epoch)
+        writer.add_scalar('Test/Acc', test_acc.avg, epoch)
+        writer.add_scalar('Test/loss', test_loss.avg, epoch)
 
         if args.use_ema:
                 ema_to_save = ema_model.ema.module if hasattr(
                 ema_model.ema, "module") else ema_model.ema
 
-        if (test_acc > best_acc):
-            best_acc = test_acc
+        if (test_acc.avg > best_acc):
+            best_acc = test_acc.avg
             torch.save(
                 {
                 'best_acc': best_acc,
@@ -493,7 +487,7 @@ if __name__ == "__main__":
                         help="The initial learning rate") 
     parser.add_argument("--momentum", default=0.9, type=float,
                         help="Optimizer momentum")
-    parser.add_argument("--wd", default=0.01, type=float,
+    parser.add_argument("--wd", default=5e-4, type=float,
                         help="Weight decay")
     parser.add_argument("--expand-labels", action="store_true", 
                         help="expand labels to fit eval steps")
