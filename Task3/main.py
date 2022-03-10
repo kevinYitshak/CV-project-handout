@@ -326,47 +326,34 @@ def main(args):
             '''
             ----------------------------- fixmatch loss -------------------------------------
             '''
-            # porb for unlabeled data
-            y_ul_pred_prob = torch.nn.Softmax(dim=1)(logits_u_w)
-            # print(y_ul_pred_prob.size()) # [64, 10]
-
-            max_pred_val, max_pred_label = torch.topk(y_ul_pred_prob, k=1, dim=-1)
-            # print(max_pred_label) # lables
-            # print(pred_val.shape, pred_idx.shape) # [64, 1]
-
-            unlabel = torch.where(max_pred_val > args.threshold, max_pred_label, 
-                        (args.num_classes+1) * torch.ones(1, dtype=torch.long).to(device))
-
-            # print(unlabel)
-            # get index of unlable_index which is not = 11
-            idx_unlabel, _ = torch.where(unlabel != args.num_classes+1)
-            select_unlabel_samples = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel, device=device))
-
-            unlabel_filtered = unlabel[unlabel != (args.num_classes+1)]
-            unlabel_unique = torch.unique(unlabel_filtered)
-            # print('unlabel_unique: ', unlabel_unique)
-
-            if (unlabel_unique.size() != 0):
-                select_unlabel_unique = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
-                select_label_samples = torch.empty(unlabel_unique.size(0), 3, 32, 32).to(device)
-                select_label_output = torch.empty(unlabel_unique.size(0)).to(device)
+            mask_idx = torch.nonzero(mask)[:, 0] # get index of max_probs > args.threshold
+            target_select_uw = torch.index_select(targets_u, 0, mask_idx) # select labels of weak aug > args.threshold
+            target_unique_uw = torch.unique(target_select_uw)
+            # print('target_unique_uw: ', target_unique_uw)
+            '''
+            ----------------------------- HIST MATCHING -------------------------------------
+            '''
+            if (target_unique_uw.size(0) != 0):
+                select_unlabel_unique = torch.empty(target_unique_uw.size(0), 3, 32, 32).to(device)
+                select_label_samples = torch.empty(target_unique_uw.size(0), 3, 32, 32).to(device)
+                select_label_output = torch.empty(target_unique_uw.size(0)).to(device)
                 
                 # print('unlabel unique: ', unlabel_unique.size())
-                for k in range(unlabel_unique.size(0)):
-                    idx_unlabel_unique = torch.where(unlabel == unlabel_unique[k])[0]
-                    select_uindex = randrange(0, idx_unlabel_unique)
-                    # print('select_uindex: ', select_uindex)
-                    select_unlabel_unique[k, :, :, :] = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
+                for k in range(target_unique_uw.size(0)):
+                    idx_unlabel_unique = torch.where(targets_u == target_unique_uw[k])[0]
+                    idx_label = torch.where(targets_x == target_unique_uw[k])[0]
+                    if (idx_unlabel_unique.size(0) != 0 and idx_label.size(0) !=0 ):
+                        select_uindex = randrange(0, idx_unlabel_unique)
+                        # print('select_uindex: ', select_uindex)
+                        select_unlabel_unique[k, :, :, :] = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
                 
-                    idx_label = torch.where(targets_x == unlabel_unique[k])[0]
-                    select_lindex = randrange(0, idx_label)
+                        select_lindex = randrange(0, idx_label)
 
-                    select_label_samples[k, :, :, :] = torch.index_select(inputs_x, 0, idx_label[select_lindex])
-                    select_label_output[k] = torch.index_select(targets_x, 0, idx_label[select_lindex])
+                        select_label_samples[k, :, :, :] = torch.index_select(inputs_x, 0, idx_label[select_lindex])
+                        select_label_output[k] = torch.index_select(targets_x, 0, idx_label[select_lindex])
 
                 # print('select_label_samples size: ', select_label_samples.size())
                 # print('select_label_output size: ', select_label_output)
-                
                 # print('select_unlabel_output size: ', select_unlabel_samples.size())
 
                 hist_matched_tensor = torch.empty(select_label_samples.size(0), 3, 32, 32).to(device)
@@ -383,14 +370,11 @@ def main(args):
                     hist_matched_tensor[i, :, :, :] = img2tensor(args, image_label_matched)
 
             # print(hist_matched_tensor.size())
-            unlabel_pred = model(select_unlabel_samples)
+                hist_matched_pred = model(hist_matched_tensor)
 
-            hist_matched_pred = model(hist_matched_tensor)
-
-            if (unlabel_filtered.size(0) != 0):
-                unlabel_loss = F.cross_entropy(unlabel_pred, unlabel_filtered)
+            if (target_unique_uw.size(0) != 0):
                 hist_loss = F.cross_entropy(hist_matched_pred, select_label_output.long())
-                final_loss = fix_match_loss + unlabel_loss + hist_loss
+                final_loss = fix_match_loss + hist_loss
             else:
                 final_loss = fix_match_loss
             
