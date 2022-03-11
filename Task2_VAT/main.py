@@ -169,9 +169,9 @@ if __name__ == "__main__":
                         help='train batchsize')
     parser.add_argument('--test-batch', default=64, type=int,
                         help='train batchsize')
-    parser.add_argument('--total-iter', default=2*30, type=int,
+    parser.add_argument('--total-iter', default=1024*30, type=int,
                         help='total number of iterations to run')
-    parser.add_argument('--iter-per-epoch', default=2, type=int,
+    parser.add_argument('--iter-per-epoch', default=1024, type=int,
                         help="Number of iterations to run per epoch")
     parser.add_argument('--num-workers', default=1, type=int,
                         help="Number of workers to launch during training")                        
@@ -185,7 +185,7 @@ if __name__ == "__main__":
                         help="model width for wide resnet")
     parser.add_argument("--vat-xi", default=10.0, type=float, 
                         help="VAT xi parameter")
-    parser.add_argument("--vat-eps", default=1.0, type=float, 
+    parser.add_argument("--vat-eps", default=5.0, type=float, 
                         help="VAT epsilon parameter") 
     parser.add_argument("--vat-iter", default=1, type=int, 
                         help="VAT iteration parameter") 

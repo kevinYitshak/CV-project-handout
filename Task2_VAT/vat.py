@@ -1,6 +1,10 @@
 
 import torch
 import torch.nn as nn
+import torchvision.transforms as transforms
+import torch.nn.functional as F
+import numpy as np
+import cv2
 
 class VATLoss(nn.Module):
 
@@ -10,40 +14,60 @@ class VATLoss(nn.Module):
         self.eps = args.vat_eps
         self.vat_iter = args.vat_iter
         self.device = device
-
+        self.args = args
+    
     def forward(self, model, x):
         predictions = torch.softmax(model(x), dim=-1)
-        advDistance = 0
-
-        r = torch.randn_like(x)
         
-        for _ in range(self.vat_iter):
-            r = self.xi * self.get_normalized_vector(r).requires_grad_().to(self.device)
-            advExamples = x + r
-            advPredictions = model(advExamples)
-            advPredictions = torch.softmax(advPredictions, dim=-1)
+        noise = torch.normal(0, 1, size=x.shape).to(self.device)
+        noise = self.L2Norm(noise)
+        noise.requires_grad = True
 
-            # advDistance = self.kl_divergence(predictions, advPredictions)
-            advDistance = nn.functional.kl_div(nn.functional.log_softmax(advPredictions,dim=-1), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
-#             advDistance.backward(retain_graph = True)
-            
-            grad = torch.autograd.grad(advDistance, [r])[0]
-            r = grad.detach()
-            r = self.get_normalized_vector(r).to(self.device)
-          
-#             model.zero_grad()
-            
-        advPredictions = model(x + self.eps * r)
-        loss = nn.functional.kl_div(nn.functional.log_softmax(advPredictions, dim=-1), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
-        return loss
+        predictions = model(x)
     
-    def get_normalized_vector(self, d):
-        d_abs_max = torch.max(
-            torch.abs(d.view(d.size(0), -1)), 1, keepdim=True)[0].view(
-                d.size(0), 1, 1, 1)
-        # print(d_abs_max.size())
-        d = d / (1e-12 + d_abs_max)
-        d = d / torch.sqrt(1e-6 + torch.sum(
-            torch.pow(d, 2.0), tuple(range(1, len(d.size()))), keepdim=True))
-        # print(torch.norm(d.view(d.size(0), -1), dim=1))
+        for _ in range(self.vat_iter):
+            advPredictions = model(x + self.xi * noise)
+            
+            advDistance = F.kl_div(F.log_softmax(advPredictions, dim=-1), F.softmax(predictions, dim=-1)).backward(retain_graph=True)
+            
+            noise = self.L2Norm(noise.grad)
+            model.zero_grad()
+
+        image = x + self.eps * noise
+        # to save some images for report
+        # for i in range(x.size(0)-60):
+        #     img = self.tensor2img(self.args, image[i, :, :, :])
+        #     cv2.imwrite('./Task2_adv_Samples_' + str(i) + '.png', img)
+
+        advOutput = model(image)
+
+        loss = F.kl_div(F.log_softmax(advOutput, dim=-1), F.softmax(predictions, dim=-1))
+        
+        return loss
+        
+
+    def L2Norm(self, d):
+        d_reshaped = d.view(d.shape[0], -1, *(1 for _ in range(d.dim() - 2)))
+        d /= torch.norm(d_reshaped, dim=1, keepdim=True) + 1e-8
         return d
+
+    def tensor2img(self, args, image):
+
+        if args.num_classes == "10":
+            mean = np.array([0.4914, 0.4822, 0.4465])
+            std = np.array([0.2471, 0.2435, 0.2616])
+        else:
+            mean   = np.array([0.5071, 0.4867, 0.4408])
+            std    = np.array([0.2675, 0.2565, 0.2761])
+
+        tf = transforms.Compose([
+            transforms.Normalize((-mean/std), (1/std))
+        ])
+
+        img = image.detach().cpu()
+        img = tf(img).numpy()
+        print(img.shape)
+        img = np.transpose(img, (1, 2, 0))
+        img = img * 255
+        img = img.astype('uint8')
+        return img
