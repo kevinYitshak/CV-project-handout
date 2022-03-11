@@ -2,11 +2,13 @@ import torch
 import numpy as np
 from dataloader import get_cifar10, get_cifar100
 from model.wrn import WideResNet
-from utils import accuracy
+from utils import accuracy, AverageMeter
+import torch.nn.functional as F
 import argparse
+from tqdm import tqdm
 from torch.utils.data   import DataLoader
 
-def test_cifar10(testdataset, device, filepath = ".weights/cifar10.pt"):
+def test_cifar10(test_loader, device, filepath = "./Task1_weights/weights_CIFAR10_4k_0.95/cifar10.pt"):
     '''
     args: 
         testdataset : (torch.utils.data.Dataset)
@@ -24,26 +26,30 @@ def test_cifar10(testdataset, device, filepath = ".weights/cifar10.pt"):
     # TODO: SUPPLY the code for this function
     model = WideResNet(args.model_depth, 
                                 10, widen_factor=args.model_width)
-    model.load_state_dict(torch.load(filepath))
+    model.load_state_dict(torch.load(filepath, map_location=torch.device('cpu')))
     model.to(device)
     model.eval()
-    criterion = torch.nn.CrossEntropyLoss()
     
-    test_loss = 0
-    total = 0
+    with torch.no_grad():
+        test_loss = AverageMeter()
+        test_acc = AverageMeter()
 
-    for i, (data, target) in enumerate(testdataset):
-        data, target = data.to(device), target.to(device)
-        pred = model(data)
-        loss = criterion(pred, target)
+        test_loader = tqdm(test_loader)
+        for _, (data, target) in enumerate(test_loader):
+            data, target = data.to(device), target.to(device)
+            pred = model(data)
+            loss = F.cross_entropy(pred, target)
 
-        test_loss += loss.item()
-        total += target.size(0)
-        acc = accuracy(pred, target)[0].item()
-    
-    return test_loss / total, acc / total
+            test_loss.update(loss.item(), data.shape[0])
+            test_acc.update(accuracy(pred, target)[0].item(), data.shape[0])
 
-def test_cifar100(testdataset, device, filepath=".weights/cifar100.pt"):
+            test_loader.set_description("Loss: {loss:.4f}. Test Acc: {acc:.2f}. ".format(
+                loss=test_loss.avg,
+                acc=test_acc.avg,
+            ))
+    return test_loss.avg, test_acc.avg
+
+def test_cifar100(test_loader, device, filepath="./task1_CIFAR100_logs/cifar100_2.5k_0.6_final/cifar10.pt"):
     '''
     args: 
         testdataset : (torch.utils.data.Dataset)
@@ -60,24 +66,28 @@ def test_cifar100(testdataset, device, filepath=".weights/cifar100.pt"):
     '''
     model = WideResNet(args.model_depth, 
                                 100, widen_factor=args.model_width)
-    model.load_state_dict(torch.load(filepath))
+    model.load_state_dict(torch.load(filepath, map_location=torch.device('cpu')))
     model.to(device)
     model.eval()
-    criterion = torch.nn.CrossEntropyLoss()
     
-    test_loss = 0
-    total = 0
+    with torch.no_grad():
+        test_loss = AverageMeter()
+        test_acc = AverageMeter()
 
-    for i, (data, target) in enumerate(testdataset):
-        data, target = data.to(device), target.to(device)
-        pred = model(data)
-        loss = criterion(pred, target)
+        test_loader = tqdm(test_loader)
+        for _, (data, target) in enumerate(test_loader):
+            data, target = data.to(device), target.to(device)
+            pred = model(data)
+            loss = F.cross_entropy(pred, target)
 
-        test_loss += loss.item()
-        total += target.size(0)
-        acc = accuracy(pred, target)[0].item()
-    
-    return test_loss / total, acc / total
+            test_loss.update(loss.item(), data.shape[0])
+            test_acc.update(accuracy(pred, target)[0].item(), data.shape[0])
+
+            test_loader.set_description("Loss: {loss:.4f}. Test Acc: {acc:.2f}. ".format(
+                loss=test_loss.avg,
+                acc=test_acc.avg,
+            ))
+    return test_loss.avg, test_acc.avg
 
 if __name__ == "__main__":
 
@@ -88,7 +98,7 @@ if __name__ == "__main__":
     parser.add_argument("--datapath", default="./data/", 
                         type=str, help="Path to the CIFAR-10/100 dataset")
     parser.add_argument('--num-labeled', type=int, 
-                        default=4000, help='Total number of labeled samples')
+                        default=250, help='Total number of labeled samples')
     parser.add_argument("--lr", default=0.03, type=float, 
                         help="The initial learning rate") 
     parser.add_argument("--momentum", default=0.9, type=float,
@@ -117,11 +127,17 @@ if __name__ == "__main__":
                         help="model width for wide resnet")
 
     args = parser.parse_args()
+
     if args.dataset == "cifar100":
         args.num_classes = 100
-    args.num_classes = 10
-
-    _, _, test_dataset = get_cifar10(args, args.datapath, mode="Test")
+        args.model_depth = 28
+        args.model_width = 8
+        _, _, test_dataset = get_cifar100(args, args.datapath)
+    else:
+        args.num_classes = 10
+        args.model_depth = 28
+        args.model_width = 2
+        _, _, test_dataset = get_cifar10(args, args.datapath)
 
     test_loader = DataLoader(test_dataset,
                             batch_size = args.test_batch,
@@ -131,8 +147,6 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     if args.dataset == "cifar10":
-        loss, acc = test_cifar10(test_loader, device, "weights/cifar10.pt")
-        print("Accuracy: {0}, Loss: {0}".format(acc, loss))
+        loss, acc = test_cifar10(test_loader, device)
     else:
-        loss, acc = test_cifar100(test_loader, device, "weights/cifar100.pt")
-        print("Accuracy: {0}, Loss: {0}".format(acc, loss))
+        loss, acc = test_cifar100(test_loader, device)
