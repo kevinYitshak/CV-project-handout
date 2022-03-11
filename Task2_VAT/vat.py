@@ -24,7 +24,7 @@ class VATLoss(nn.Module):
             advPredictions = torch.softmax(advPredictions, dim=-1)
 
             # advDistance = self.kl_divergence(predictions, advPredictions)
-            advDistance = nn.functional.kl_div(nn.functional.log_softmax(advPredictions), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
+            advDistance = nn.functional.kl_div(nn.functional.log_softmax(advPredictions,dim=-1), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
 #             advDistance.backward(retain_graph = True)
             
             grad = torch.autograd.grad(advDistance, [r])[0]
@@ -34,7 +34,7 @@ class VATLoss(nn.Module):
 #             model.zero_grad()
             
         advPredictions = model(x + self.eps * r)
-        loss = nn.functional.kl_div(nn.functional.log_softmax(advPredictions), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
+        loss = nn.functional.kl_div(nn.functional.log_softmax(advPredictions, dim=-1), nn.functional.softmax(predictions, dim=-1), reduction='batchmean')
         return loss
     
     def get_normalized_vector(self, d):

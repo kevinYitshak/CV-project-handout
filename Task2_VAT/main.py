@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 from dataloader import get_cifar10, get_cifar100
 from vat        import VATLoss
-from utils      import accuracy
+from utils      import accuracy, AverageMeter
 from model.wrn  import WideResNet
 
 import torch
@@ -57,11 +57,11 @@ def main(args):
     ############################################################################
     best_acc = 0
     
+    model.zero_grad()
     model.train()
     for epoch in range(args.epoch):
-        train_loss_epoch = 0
-        train_acc_epoch = 0
-        iteration = 0
+        train_loss_epoch = AverageMeter()
+        vloss = AverageMeter()
         print('-'*30)
         print("epoch: ", epoch)
         print('-'*30)
@@ -95,8 +95,6 @@ def main(args):
             # zero the parameter gradients
             optim.zero_grad()
             
-            train_loss_iter = 0
-            train_acc_iter = 0
             # create obj for VATLoss class
             vatLoss = VATLoss(args, device)
             vaLoss = vatLoss.forward(model, x_ul)
@@ -108,48 +106,42 @@ def main(args):
             # print("Loss: {0}, VATLoss: {1}".format(loss.item(), vaLoss.item()))
             optim.step()
             scheduler.step()
-            
-            iteration += 1
-            train_loss_iter = loss.item()
-            train_acc_iter = accuracy(predictions, y_l)[0].item()
+            model.zero_grad()
 
-            tbar.set_description('loss: {:.4f}; Vat: {:.4f}; acc: {:.4f}'.format(train_loss_iter,vaLoss.item(), train_acc_iter))
+            train_loss_epoch.update(loss.item())
+            vloss.update(vaLoss.item())
 
-            # writer.add_scalar('Train/Acc_iter', train_acc_iter, i)
-            # writer.add_scalar('Train/Loss_iter', train_loss_iter, i)
-
-            train_loss_epoch += train_loss_iter
-            train_acc_epoch += train_acc_iter
-
-        train_loss_epoch /= iteration
-        train_acc_epoch /= iteration
+            tbar.set_description('Loss: {loss:.4f}. Loss_VAT: {vatLoss:.4f}. '.format(
+                loss=train_loss_epoch.avg,
+                vatLoss=vloss.avg))
 
         with torch.no_grad():
-            test_loss = 0
-            test_acc = 0
-            total = 0
+            test_loss = AverageMeter()
+            test_acc = AverageMeter()
+            test_loader = tqdm(test_loader)
             for i, (data, target) in enumerate(test_loader):
                 model.eval()
                 data, target = data.to(device), target.to(device)
                 pred = model(data)
                 loss = criterion(pred, target)
 
-                test_loss += loss.item() / target.size(0)
-                total += 1
-                test_acc += accuracy(pred, target)[0].item()
+                test_loss.update(loss.item(), data.shape[0])
+                test_acc.update(accuracy(pred, target)[0].item(), data.shape[0])
+
+                test_loader.set_description("Loss: {loss:.4f}. Test Acc: {top1:.2f}. ".format(
+                    loss=test_loss.avg,
+                    top1=test_acc.avg,
+                ))
         
-        test_acc /= total
-        test_loss /= total
+        # writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
+        writer.add_scalar('Train/Loss', train_loss_epoch.avg, epoch)
+        writer.add_scalar('Test/Acc', test_acc.avg, epoch)
+        writer.add_scalar('Test/loss', test_loss.avg, epoch)
         
-        writer.add_scalar('Train/Acc', train_acc_epoch, epoch)
-        writer.add_scalar('Train/Loss', train_loss_epoch, epoch)
-        writer.add_scalar('Test/Acc', test_acc, epoch)
-        writer.add_scalar('Test/loss', test_loss, epoch)
+        print('Test Acc: ', test_acc.avg)
         
-        print('Test Acc: ', test_acc)
-        
-        if (test_acc >= best_acc):
-            best_acc = test_acc
+        if (test_acc.avg >= best_acc):
+            best_acc = test_acc.avg
             # torch.load('./weights/cifar10.pt')
             torch.save(model.state_dict(), './weights/cifar10_VAT.pt')
             ####################################################################
@@ -177,9 +169,9 @@ if __name__ == "__main__":
                         help='train batchsize')
     parser.add_argument('--test-batch', default=64, type=int,
                         help='train batchsize')
-    parser.add_argument('--total-iter', default=1024*30, type=int,
+    parser.add_argument('--total-iter', default=2*30, type=int,
                         help='total number of iterations to run')
-    parser.add_argument('--iter-per-epoch', default=1024, type=int,
+    parser.add_argument('--iter-per-epoch', default=2, type=int,
                         help="Number of iterations to run per epoch")
     parser.add_argument('--num-workers', default=1, type=int,
                         help="Number of workers to launch during training")                        
