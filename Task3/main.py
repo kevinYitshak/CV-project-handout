@@ -16,6 +16,7 @@ from random import randrange
 from model.wrn  import WideResNet
 
 import torch
+from torchvision import models
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data   import DataLoader, RandomSampler, SequentialSampler
@@ -156,6 +157,7 @@ def de_interleave(x, size):
     s = list(x.shape)
     return x.reshape([size, -1] + s[1:]).transpose(0, 1).reshape([-1] + s[1:])
 
+
 def main(args):
     if args.dataset == "cifar10":
         args.num_classes = 10
@@ -210,7 +212,7 @@ def main(args):
         path = args.resume
     else:
         d = datetime.now().strftime('%Y-%m-%d~%H:%M:%S')
-        path = './' + args.dataset + '_' + str(args.num_labeled) + '_' + str(args.threshold) + '_' +  d
+        path = './' + args.dataset + '' + str(args.num_labeled) + '' + str(args.threshold) + '_' +  d
 
         if not os.path.exists(path + '/ckpt'):
             os.makedirs(path + '/ckpt')
@@ -236,7 +238,7 @@ def main(args):
             momentum=0.9,
             nesterov=True
         )
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=2, epochs=10)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optim, max_lr=1e-2, steps_per_epoch=1024, epochs=10)
     ############################################################################
     
     best_acc = 0
@@ -267,6 +269,7 @@ def main(args):
         train_loss_epoch = AverageMeter()
         losses_x = AverageMeter()
         losses_u = AverageMeter()
+        losses_hist = AverageMeter()
 
         tbar = tqdm(range(args.iter_per_epoch))
 
@@ -303,15 +306,12 @@ def main(args):
             logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
             del logits
 
-
             # zero the parameter gradients
             optim.zero_grad()
 
-            # get loss for labeled data
-            # label_loss = criterion(y_l_pred, y_l)
-
             '''
             ----------------------------- fixmatch loss -------------------------------------
+            referred from: https://github.com/kekmodel/FixMatch-pytorch
             '''
             Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
@@ -333,47 +333,58 @@ def main(args):
             '''
             ----------------------------- HIST MATCHING -------------------------------------
             '''
+            with torch.no_grad():
+                if (target_unique_uw.size(0) != 0):
+                    select_unlabel_samples = torch.empty(target_unique_uw.size(0), 3, 32, 32).to(device)
+                    select_label_samples = torch.empty(target_unique_uw.size(0), 3, 32, 32).to(device)
+                    select_label_output = torch.empty(target_unique_uw.size(0)).to(device)
+                    
+                    # print('unlabel unique: ', unlabel_unique.size())
+                
+                    for k in range(target_unique_uw.size(0)):
+                        idx_unlabel = torch.where(targets_u == target_unique_uw[k])[0]
+                        idx_label = torch.where(targets_x == target_unique_uw[k])[0]
+                        #print('idx_unlabel: ', idx_unlabel.size())
+                        #print('idx_label: ', idx_label.size())
+                        if (idx_unlabel.size(0) != 0 and idx_label.size(0) !=0 ):
+                            #print('select_uindex: ', idx_unlabel_unique.shape)
+                            select_uindex = randrange(0, idx_unlabel.size(0))
+                        
+                            select_unlabel_samples[k, :, :, :] = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel[select_uindex], device=device))
+                
+                            select_lindex = randrange(0, idx_label.size(0))
+
+                            select_label_samples[k, :, :, :] = torch.index_select(inputs_x, 0, idx_label[select_lindex])
+                            select_label_output[k] = torch.index_select(targets_x, 0, idx_label[select_lindex])
+
+                    # print('select_label_samples size: ', select_label_samples.size())
+                    # print('select_label_output size: ', select_label_output)
+                    # print('select_unlabel_output size: ', select_unlabel_samples.size())
+
+                    hist_matched_tensor = torch.empty(select_label_samples.size(0), 3, 32, 32).to(device)
+                    for i in range(select_unlabel_samples.size(0)): #max can args.num_classes
+                        # print(i)
+                        img_label = tensor2img(args, select_label_samples[i, :, :, :])
+                        img_unlabel = tensor2img(args, select_unlabel_samples[i, :, :, :])
+                        '---------------------------HIST MATCHING-----------------------------------'
+                        # hist matching referred from: https://automaticaddison.com/how-to-do-histogram-matching-using-opencv/
+                        
+                        image_label_matched = match_histograms(img_label, img_unlabel)
+                        # cv2.imwrite('./img_matched.png', image_label_matched)
+                        # cv2.imwrite('./img_label.png', img_label)
+                        # cv2.imwrite('./img_unlable.png', img_unlabel)
+                        '---------------------------HIST MATCHING-----------------------------------'
+                        hist_matched_tensor[i, :, :, :] = img2tensor(args, image_label_matched)
+
+                    # print(hist_matched_tensor.size())
+
             if (target_unique_uw.size(0) != 0):
-                select_unlabel_unique = torch.empty(target_unique_uw.size(0), 3, 32, 32).to(device)
-                select_label_samples = torch.empty(target_unique_uw.size(0), 3, 32, 32).to(device)
-                select_label_output = torch.empty(target_unique_uw.size(0)).to(device)
-                
-                # print('unlabel unique: ', unlabel_unique.size())
-                for k in range(target_unique_uw.size(0)):
-                    idx_unlabel_unique = torch.where(targets_u == target_unique_uw[k])[0]
-                    idx_label = torch.where(targets_x == target_unique_uw[k])[0]
-                    if (idx_unlabel_unique.size(0) != 0 and idx_label.size(0) !=0 ):
-                        select_uindex = randrange(0, idx_unlabel_unique)
-                        # print('select_uindex: ', select_uindex)
-                        select_unlabel_unique[k, :, :, :] = torch.index_select(inputs_u_w, 0, torch.as_tensor(idx_unlabel_unique[select_uindex], device=device))
-                
-                        select_lindex = randrange(0, idx_label)
-
-                        select_label_samples[k, :, :, :] = torch.index_select(inputs_x, 0, idx_label[select_lindex])
-                        select_label_output[k] = torch.index_select(targets_x, 0, idx_label[select_lindex])
-
-                # print('select_label_samples size: ', select_label_samples.size())
-                # print('select_label_output size: ', select_label_output)
-                # print('select_unlabel_output size: ', select_unlabel_samples.size())
-
-                hist_matched_tensor = torch.empty(select_label_samples.size(0), 3, 32, 32).to(device)
-                for i in range(select_unlabel_unique.size(0)): #max can args.num_classes
-                    # print(i)
-                    img_label = tensor2img(args, select_label_samples[i, :, :, :])
-                    img_unlabel = tensor2img(args, select_unlabel_unique[i, :, :, :])
-                    '---------------------------HIST MATCHING-----------------------------------'
-                    image_label_matched = match_histograms(img_label, img_unlabel)
-                    # cv2.imwrite('./img_matched.png', image_label_matched)
-                    # cv2.imwrite('./img_label.png', img_label)
-                    # cv2.imwrite('./img_unlable.png', img_unlabel)
-                    '---------------------------HIST MATCHING-----------------------------------'
-                    hist_matched_tensor[i, :, :, :] = img2tensor(args, image_label_matched)
-
-            # print(hist_matched_tensor.size())
                 hist_matched_pred = model(hist_matched_tensor)
-
-            if (target_unique_uw.size(0) != 0):
                 hist_loss = F.cross_entropy(hist_matched_pred, select_label_output.long())
+                try:
+                    losses_hist.update(hist_loss.detach().cpu().item())
+                except:
+                    continue
                 final_loss = fix_match_loss + hist_loss
             else:
                 final_loss = fix_match_loss
@@ -383,6 +394,7 @@ def main(args):
             train_loss_epoch.update(final_loss.item())
             losses_x.update(Lx.item())
             losses_u.update(Lu.item())
+            
 
             optim.step()
             scheduler.step()
@@ -391,10 +403,11 @@ def main(args):
 
             model.zero_grad()
 
-            tbar.set_description('Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. '.format(
+            tbar.set_description('Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. Loss_hist: {loss_hist:.4f}. '.format(
                 loss=train_loss_epoch.avg,
                 loss_x=losses_x.avg,
-                loss_u=losses_u.avg,))
+                loss_u=losses_u.avg,
+                loss_hist=losses_hist.avg))
 
         '''
         ---------------------- TESTING ----------------------
@@ -419,12 +432,11 @@ def main(args):
                 test_loss.update(loss.item(), data.shape[0])
                 test_acc.update(accuracy(pred, target)[0].item(), data.shape[0])
 
-                test_loader.set_description("Loss: {loss:.4f}. Test Acc: {top1:.2f}. ".format(
+                test_loader.set_description("Loss: {loss:.4f}. Test Acc: {acc:.4f}. ".format(
                     loss=test_loss.avg,
-                    top1=test_acc.avg,
+                    acc=test_acc.avg,
                 ))
 
-        # writer.add_scalar('Train/Acc', train_acc_epoch.avg, epoch)
         writer.add_scalar('Train/Loss', train_loss_epoch.avg, epoch)
         writer.add_scalar('Test/Acc', test_acc.avg, epoch)
         writer.add_scalar('Test/loss', test_loss.avg, epoch)
